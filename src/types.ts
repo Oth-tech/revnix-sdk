@@ -1,0 +1,165 @@
+// Response and input types for the Revnix /v1 API. These mirror the shapes
+// returned by convex/http.ts in revnix-app — the backend is the source of
+// truth; update here when the API surface changes.
+
+export type Environment = "sandbox" | "production";
+export type Store = "apple" | "google";
+
+export interface RevnixConfig {
+  /** API key issued from the Revnix dashboard (rvx_live_… or rvx_test_…).
+   *  The key fixes both the app and the environment server-side. */
+  apiKey: string;
+  /** Convex site URL of the Revnix deployment, e.g. https://xyz.convex.site */
+  baseUrl: string;
+  /** Persistent key-value storage for the customer id. Pass an adapter over
+   *  MMKV/AsyncStorage in React Native; defaults to in-memory (ids reset on
+   *  every app launch — fine for tests, wrong for production). */
+  storage?: RevnixStorage;
+  /** Start as this customer instead of generating/loading an anonymous id. */
+  customerId?: string;
+  /** Custom fetch implementation (tests, polyfills). Defaults to global fetch. */
+  fetch?: typeof fetch;
+}
+
+export interface RevnixStorage {
+  getItem(key: string): string | null | Promise<string | null>;
+  setItem(key: string, value: string): void | Promise<void>;
+}
+
+// ——— POST /v1/purchases ———
+
+export interface RegisterPurchaseInput {
+  source: Store;
+  /** Apple: originalTransactionId · Google: purchaseToken. */
+  token: string;
+  productId: string;
+  transactionId: string;
+  /** Unix ms. Defaults server-side to registration time. */
+  occurredAt?: number;
+  /** Unix ms subscription expiry, when the client knows it. */
+  expiresAt?: number;
+  /** Raw store payload to retain in the ledger for reprocessing. */
+  rawPayload?: unknown;
+}
+
+export interface RegisterPurchaseResult {
+  eventId: string;
+  /** Ledger position of the write — read-your-writes is assertable (ADR 0004). */
+  seq: number;
+  /** True when the store webhook already recorded this purchase. */
+  duplicate: boolean;
+  /** Canonical owner — may differ from the current customer when identity
+   *  resolution or a transfer behavior reassigned the store token. */
+  customerId: string;
+  transferred: boolean;
+}
+
+// ——— GET /v1/customers/{id}/entitlements ———
+
+export interface EntitlementSource {
+  kind: "subscription" | "grant";
+  key: string;
+  isActive: boolean;
+  expiresAt?: number;
+}
+
+export interface Entitlement {
+  entitlementId: string;
+  isActive: boolean;
+  expiresAt?: number;
+  sources: EntitlementSource[];
+}
+
+export interface CustomerEntitlements {
+  customerId: string;
+  /** Ledger cursor this read reflects. */
+  cursor: number;
+  entitlements: Entitlement[];
+}
+
+// ——— POST /v1/identify · POST /v1/customers/{id}/alias ———
+
+export type IdentifyStrategy = "merge" | "block";
+
+export interface IdentifyResult {
+  canonicalId: string;
+  merged: boolean;
+}
+
+export interface AliasResult {
+  canonicalId: string;
+  aliased: boolean;
+}
+
+// ——— GET /v1/customers/{id}/identity ———
+
+export interface IdentityInfo {
+  canonicalId: string;
+  isAlias: boolean;
+  anonymous: boolean;
+  linkedIds?: string[];
+}
+
+// ——— GET /v1/placements/{key}/offering ———
+
+export interface PlacementPackage {
+  packageId: string;
+  productId: string;
+  metadata?: Record<string, unknown>;
+  product: PlacementProduct | null;
+}
+
+export interface PlacementProduct {
+  productId: string;
+  displayName: string;
+  entitlementIds: string[];
+  prices?: Array<{
+    store: Store | "stripe";
+    currency: string;
+    amountMinor: number;
+  }>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PlacementOffering {
+  offeringId: string;
+  displayName: string;
+  metadata?: Record<string, unknown>;
+  packages: PlacementPackage[];
+}
+
+// REV-028: remote paywall design attached to a placement. Render contract —
+// the app draws this with its own components; prices still come from the
+// store (StoreKit / Play Billing) so the display never disagrees with the
+// charge.
+export interface PaywallConfig {
+  template: "focus" | "feature-list" | "minimal";
+  headline: string;
+  subheadline?: string;
+  features: Array<{ icon?: string; title: string; description?: string }>;
+  ctaLabel: string;
+  /** packageId of the visually highlighted package. */
+  highlightPackageId?: string;
+  /** Badge on the highlighted package, e.g. "SAVE 17%". */
+  badgeText?: string;
+  /** Accent hex like "#6478ff"; fall back to the app theme when absent. */
+  accent?: string;
+  /** Hero image URL rendered above the headline in place of the icon tile. */
+  heroImageUrl?: string;
+}
+
+export interface PlacementPaywall {
+  paywallId: string;
+  name: string;
+  config: PaywallConfig;
+}
+
+export interface PlacementResolution {
+  status: "ok";
+  placementKey: string;
+  revision: number;
+  placementMetadata?: Record<string, unknown>;
+  offering: PlacementOffering | null;
+  paywall: PlacementPaywall | null;
+  experiment: null;
+}
