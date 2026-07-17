@@ -290,3 +290,52 @@ describe("async storage adapters", () => {
     expect(map.get("revnix.customerId")).toBe(id);
   });
 });
+
+describe("paywall view reporting", () => {
+  test("logPaywallShown posts one view with a fresh viewId per call", async () => {
+    const fetchImpl = mockFetch(
+      { status: 201, body: { eventId: "evt1", seq: 1, duplicate: false } },
+      { status: 201, body: { eventId: "evt2", seq: 2, duplicate: false } }
+    );
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    const id = await client.getCustomerId();
+
+    client.logPaywallShown({ placementKey: "onboarding", paywallId: "pw_1" });
+    client.logPaywallShown({ placementKey: "onboarding", paywallId: "pw_1" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const call = lastCall(fetchImpl);
+    expect(call.url).toBe("https://demo.convex.site/v1/paywalls/viewed");
+    expect(call.method).toBe("POST");
+    expect(call.body).toMatchObject({
+      customerId: id,
+      placementKey: "onboarding",
+      paywallId: "pw_1",
+    });
+    expect(call.body.viewId).toMatch(/^rvx_view_[0-9a-f]{32}$/);
+
+    // Two displays → two distinct viewIds (each is a genuine view).
+    const first = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const firstBody = JSON.parse(first[1].body as string) as { viewId: string };
+    expect(firstBody.viewId).not.toBe(call.body.viewId);
+  });
+
+  test("a failed view report never surfaces", async () => {
+    const fetchImpl = jest.fn<typeof fetch>();
+    fetchImpl.mockRejectedValueOnce(new Error("offline"));
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    await client.getCustomerId();
+    client.logPaywallShown();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});

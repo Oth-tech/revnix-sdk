@@ -1,5 +1,5 @@
 import { PurchaseBlockedError, RevnixError } from "./errors";
-import { generateAnonymousId, memoryStorage } from "./storage";
+import { generateAnonymousId, generateViewId, memoryStorage } from "./storage";
 import type {
   AliasResult,
   CustomerEntitlements,
@@ -14,7 +14,7 @@ import type {
 } from "./types";
 
 const CUSTOMER_ID_KEY = "revnix.customerId";
-const SDK_VERSION = "0.4.0";
+const SDK_VERSION = "0.5.0";
 
 export class RevnixClient {
   private readonly apiKey: string;
@@ -147,6 +147,31 @@ export class RevnixClient {
       "GET",
       `/v1/placements/${encodeURIComponent(placementKey)}/offering`
     );
+  }
+
+  /** Report that a paywall was displayed (REV-094). Fire-and-forget like
+   *  install reporting — never blocks rendering and never throws; each call
+   *  is one view (retries of the same display are deduped by viewId).
+   *  RevnixPaywall calls this automatically when given a `client`; headless
+   *  paywall UIs call it on their own show event. Powers the analytics
+   *  funnel's "Paywall displayed" stage and View → Trial/Paid conversions. */
+  logPaywallShown(options?: {
+    placementKey?: string;
+    paywallId?: string;
+  }): void {
+    const viewId = generateViewId();
+    void this.customerIdPromise
+      .then((customerId) =>
+        this.request("POST", "/v1/paywalls/viewed", {
+          customerId,
+          viewId,
+          occurredAt: Date.now(),
+          sdkVersion: SDK_VERSION,
+          ...(options?.placementKey ? { placementKey: options.placementKey } : {}),
+          ...(options?.paywallId ? { paywallId: options.paywallId } : {}),
+        })
+      )
+      .catch(() => {});
   }
 
   private async loadCustomerId(initial?: string): Promise<string> {

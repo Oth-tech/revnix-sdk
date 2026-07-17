@@ -69,10 +69,28 @@ export interface RevnixPaywallProps {
   onPrivacy?: () => void;
   theme?: Partial<RevnixPaywallTheme>;
   style?: StyleProp<ViewStyle>;
+  /** When given, the paywall reports one paywall.viewed per mount (REV-094)
+   *  — the analytics funnel's "Paywall displayed" stage. Structural typing
+   *  keeps this entrypoint free of a hard client import. */
+  client?: { logPaywallShown: (options?: { placementKey?: string; paywallId?: string }) => void };
+  /** Placement/paywall attribution attached to the view report. */
+  placementKey?: string;
+  paywallId?: string;
+  /** Opt out of the automatic view report while still passing `client`. */
+  disableViewTracking?: boolean;
 }
 
 export function RevnixPaywall(props: RevnixPaywallProps) {
   const { config, packages, loading } = props;
+
+  // One view per mount: remounting (a re-shown paywall) is a genuine new
+  // display; re-renders are not.
+  const { client, placementKey, paywallId, disableViewTracking } = props;
+  React.useEffect(() => {
+    if (!client || disableViewTracking) return;
+    client.logPaywallShown({ placementKey, paywallId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const theme = { ...DEFAULT_PAYWALL_THEME, ...props.theme };
   const accent = config.accent ?? DEFAULT_ACCENT;
 
