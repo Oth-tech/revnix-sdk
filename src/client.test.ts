@@ -35,20 +35,64 @@ function lastCall(fetchImpl: FetchMock) {
 describe("customer id lifecycle", () => {
   test("generates and persists an anonymous id on first launch", async () => {
     const storage = memoryStorage();
-    const client = new RevnixClient({ ...CONFIG, storage });
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage,
+      reportInstalls: false,
+    });
     const id = await client.getCustomerId();
     expect(id).toMatch(/^rvx_anon_[0-9a-f]{32}$/);
 
     // A second client over the same storage resumes the same customer.
-    const again = new RevnixClient({ ...CONFIG, storage });
+    const again = new RevnixClient({
+      ...CONFIG,
+      storage,
+      reportInstalls: false,
+    });
     expect(await again.getCustomerId()).toBe(id);
+  });
+
+  test("reports an install once when a fresh anonymous id is generated", async () => {
+    const storage = memoryStorage();
+    const fetchImpl = mockFetch({
+      status: 201,
+      body: { eventId: "evt1", seq: 1, duplicate: false },
+    });
+    const client = new RevnixClient({ ...CONFIG, storage, fetch: fetchImpl });
+    const id = await client.getCustomerId();
+    // The report is fire-and-forget — let the microtask queue drain.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const call = lastCall(fetchImpl);
+    expect(call.url).toBe("https://demo.convex.site/v1/installs");
+    expect(call.body).toMatchObject({ customerId: id });
+
+    // Resuming the stored id is not a new install.
+    const again = new RevnixClient({ ...CONFIG, storage, fetch: fetchImpl });
+    await again.getCustomerId();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test("a failed install report never surfaces", async () => {
+    const fetchImpl = jest.fn<typeof fetch>();
+    fetchImpl.mockRejectedValueOnce(new Error("offline"));
+    const client = new RevnixClient({ ...CONFIG, fetch: fetchImpl });
+    const id = await client.getCustomerId();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(id).toMatch(/^rvx_anon_/);
   });
 
   test("identify merges the anonymous customer and adopts the canonical id", async () => {
     const fetchImpl = mockFetch({
       body: { canonicalId: "user_42", merged: true },
     });
-    const client = new RevnixClient({ ...CONFIG, fetch: fetchImpl });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
     const anonId = await client.getCustomerId();
 
     const result = await client.identify("user_42");
@@ -171,7 +215,11 @@ describe("reads", () => {
     const fetchImpl = mockFetch({
       body: { status: "ok", placementKey: "paywall_main", revision: 2, offering: null },
     });
-    const client = new RevnixClient({ ...CONFIG, fetch: fetchImpl });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
     const res = await client.resolvePlacement("paywall_main");
     expect(res.revision).toBe(2);
     expect(lastCall(fetchImpl).url).toBe(
@@ -237,7 +285,7 @@ describe("async storage adapters", () => {
         map.set(k, v);
       },
     };
-    const client = new RevnixClient({ ...CONFIG, storage });
+    const client = new RevnixClient({ ...CONFIG, storage, reportInstalls: false });
     const id = await client.getCustomerId();
     expect(map.get("revnix.customerId")).toBe(id);
   });

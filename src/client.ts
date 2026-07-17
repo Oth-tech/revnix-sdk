@@ -14,12 +14,18 @@ import type {
 } from "./types";
 
 const CUSTOMER_ID_KEY = "revnix.customerId";
+const SDK_VERSION = "0.4.0";
 
 export class RevnixClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly storage: RevnixStorage;
   private readonly fetchImpl: typeof fetch;
+  private readonly reportInstalls: boolean;
+  private readonly installMetadata?: {
+    platform?: string;
+    appVersion?: string;
+  };
   private customerIdPromise: Promise<string>;
 
   constructor(config: RevnixConfig) {
@@ -29,6 +35,8 @@ export class RevnixClient {
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
     this.storage = config.storage ?? memoryStorage();
     this.fetchImpl = config.fetch ?? fetch;
+    this.reportInstalls = config.reportInstalls ?? true;
+    this.installMetadata = config.installMetadata;
     this.customerIdPromise = this.loadCustomerId(config.customerId);
   }
 
@@ -150,7 +158,22 @@ export class RevnixClient {
     if (stored) return stored;
     const anonymousId = generateAnonymousId();
     await this.storage.setItem(CUSTOMER_ID_KEY, anonymousId);
+    // A freshly generated id IS the install signal: first launch on this
+    // device (or a reinstall that wiped storage). logout() deliberately does
+    // not report — a new anonymous session is not a new install.
+    if (this.reportInstalls) this.reportInstall(anonymousId);
     return anonymousId;
+  }
+
+  /** Fire-and-forget install report (REV-093). Never blocks startup and
+   *  never throws — the backend absorbs retries idempotently per id. */
+  private reportInstall(customerId: string): void {
+    void this.request("POST", "/v1/installs", {
+      customerId,
+      occurredAt: Date.now(),
+      sdkVersion: SDK_VERSION,
+      ...this.installMetadata,
+    }).catch(() => {});
   }
 
   private async setCustomerId(customerId: string): Promise<void> {

@@ -19,6 +19,12 @@ export interface RevnixConfig {
   customerId?: string;
   /** Custom fetch implementation (tests, polyfills). Defaults to global fetch. */
   fetch?: typeof fetch;
+  /** Report an install (POST /v1/installs) when a fresh anonymous id is
+   *  generated — powers the dashboard's Installs / install-conversion charts.
+   *  Fire-and-forget; never blocks startup. Defaults to true. */
+  reportInstalls?: boolean;
+  /** Optional device context attached to the install report. */
+  installMetadata?: { platform?: string; appVersion?: string };
 }
 
 export interface RevnixStorage {
