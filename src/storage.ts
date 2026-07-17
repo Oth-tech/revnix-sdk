@@ -13,8 +13,8 @@ export function memoryStorage(): RevnixStorage {
   };
 }
 
-export function generateAnonymousId(): string {
-  const bytes = new Uint8Array(16);
+function randomHex(byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
   const cryptoObj = (globalThis as { crypto?: Crypto }).crypto;
   if (cryptoObj?.getRandomValues) {
     cryptoObj.getRandomValues(bytes);
@@ -23,6 +23,15 @@ export function generateAnonymousId(): string {
       bytes[i] = Math.floor(Math.random() * 256);
     }
   }
-  const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `rvx_anon_${hex}`;
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function generateAnonymousId(): string {
+  return `rvx_anon_${randomHex(16)}`;
+}
+
+/** One id per paywall display (REV-094) — the backend dedupes retries on it
+ *  while genuine repeat views (fresh ids) count separately. */
+export function generateViewId(): string {
+  return `rvx_view_${randomHex(16)}`;
 }
