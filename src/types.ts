@@ -140,6 +140,9 @@ export interface PlacementOffering {
 // charge.
 export interface PaywallConfig {
   template: "focus" | "feature-list" | "minimal";
+  /** Color scheme the paywall renders in. Absent (legacy config) = dark.
+   *  The host app's explicit `theme` prop still overrides either scheme. */
+  mode?: "dark" | "light";
   headline: string;
   subheadline?: string;
   features: Array<{ icon?: string; title: string; description?: string }>;
@@ -152,6 +155,16 @@ export interface PaywallConfig {
   accent?: string;
   /** Hero image URL rendered above the headline in place of the icon tile. */
   heroImageUrl?: string;
+  /** Footer links, dashboard-configured. Absent (legacy config) = show all
+   *  three. When a URL is set the SDK opens it directly; otherwise the host
+   *  app's onTerms/onPrivacy handler runs. */
+  footer?: {
+    showRestore: boolean;
+    showTerms: boolean;
+    showPrivacy: boolean;
+    termsUrl?: string;
+    privacyUrl?: string;
+  };
 }
 
 export interface PlacementPaywall {

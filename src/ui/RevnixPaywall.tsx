@@ -12,6 +12,7 @@ import * as React from "react";
 import {
   ActivityIndicator,
   Image,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -49,6 +50,17 @@ export const DEFAULT_PAYWALL_THEME: RevnixPaywallTheme = {
   textFaint: "#6b7078",
   border: "#2a2e36",
   accentInk: "#0a0b0d",
+};
+
+/** Base theme when the dashboard config sets `mode: "light"`. Keep in
+ *  lockstep with the builder preview (PaywallPhonePreview SCREEN_PALETTES). */
+export const LIGHT_PAYWALL_THEME: RevnixPaywallTheme = {
+  background: "#ffffff",
+  textPrimary: "#16181d",
+  textSecondary: "#5b6068",
+  textFaint: "#9aa0a8",
+  border: "#e2e5ea",
+  accentInk: "#ffffff",
 };
 
 const DEFAULT_ACCENT = "#6478ff";
@@ -91,7 +103,11 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
     client.logPaywallShown({ placementKey, paywallId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const theme = { ...DEFAULT_PAYWALL_THEME, ...props.theme };
+  // Base scheme comes from the dashboard config (mode: dark|light, absent =
+  // dark for legacy configs); the host app's explicit theme prop wins on top.
+  const baseTheme =
+    config.mode === "light" ? LIGHT_PAYWALL_THEME : DEFAULT_PAYWALL_THEME;
+  const theme = { ...baseTheme, ...props.theme };
   const accent = config.accent ?? DEFAULT_ACCENT;
 
   // Same template semantics as the dashboard preview: "minimal" shows only
@@ -119,12 +135,41 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
     props.onSelectPackage?.(packageId);
   };
 
+  // Footer links are dashboard-configured (config.footer); a legacy config
+  // without the field keeps the original always-on footer. Explicit host
+  // handlers win over config URLs — the app knows best how to open its own
+  // legal pages (in-app browser etc.); the URL is the no-handler fallback.
+  const footer = config.footer;
+  const openUrl = (url?: string) =>
+    url ? () => void Linking.openURL(url) : undefined;
+  const footerItems = (
+    [
+      {
+        show: footer?.showRestore ?? true,
+        label: "Restore",
+        onPress: props.onRestore,
+      },
+      {
+        show: footer?.showTerms ?? true,
+        label: "Terms",
+        onPress: props.onTerms ?? openUrl(footer?.termsUrl),
+      },
+      {
+        show: footer?.showPrivacy ?? true,
+        label: "Privacy",
+        onPress: props.onPrivacy ?? openUrl(footer?.privacyUrl),
+      },
+    ] as const
+  ).filter((item) => item.show);
+
   return (
     <View style={[styles.root, { backgroundColor: theme.background }, props.style]}>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        contentInsetAdjustmentBehavior="automatic"
       >
+        <View style={styles.content}>
         {config.heroImageUrl ? (
           <Image
             source={{ uri: config.heroImageUrl }}
@@ -236,103 +281,116 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
           )}
         </Pressable>
 
-        <View style={styles.footer}>
-          <Text
-            onPress={props.onRestore}
-            style={[styles.footerLink, { color: theme.textFaint }]}
-          >
-            Restore
-          </Text>
-          <Text style={[styles.footerDot, { color: theme.textFaint }]}> · </Text>
-          <Text
-            onPress={props.onTerms}
-            style={[styles.footerLink, { color: theme.textFaint }]}
-          >
-            Terms
-          </Text>
-          <Text style={[styles.footerDot, { color: theme.textFaint }]}> · </Text>
-          <Text
-            onPress={props.onPrivacy}
-            style={[styles.footerLink, { color: theme.textFaint }]}
-          >
-            Privacy
-          </Text>
+        {footerItems.length > 0 ? (
+          <View style={styles.footer}>
+            {footerItems.map((item, i) => (
+              <React.Fragment key={item.label}>
+                {i > 0 ? (
+                  <Text style={[styles.footerDot, { color: theme.textFaint }]}>
+                    {" · "}
+                  </Text>
+                ) : null}
+                <Text
+                  onPress={item.onPress}
+                  style={[styles.footerLink, { color: theme.textFaint }]}
+                >
+                  {item.label}
+                </Text>
+              </React.Fragment>
+            ))}
+          </View>
+        ) : null}
         </View>
       </ScrollView>
     </View>
   );
 }
 
-// Dimensions mirror PaywallPhonePreview.tsx (Tailwind spacing × 4px).
+// PROPORTIONS mirror PaywallPhonePreview.tsx (the dashboard's miniature phone
+// mock); SIZES are scaled up to native-device typography — the preview is a
+// scaled-down mock, so copying its pixel values verbatim rendered a paywall
+// that read ~30% too small on a real screen.
+//
+// Responsive rules:
+//  · scrollContent flexGrow+center — content sits vertically centered on tall
+//    screens (no dead bottom half) and scrolls normally when it overflows.
+//  · content maxWidth — on tablets/wide screens the column stays a readable
+//    width, horizontally centered, instead of stretching edge to edge.
 const styles = StyleSheet.create({
   root: { flex: 1 },
   scrollContent: {
-    paddingHorizontal: 22,
-    paddingTop: 24,
-    paddingBottom: 30,
-    alignItems: "stretch",
+    flexGrow: 1,
+    justifyContent: "center",
+    paddingHorizontal: 24,
+    paddingTop: 28,
+    paddingBottom: 32,
+  },
+  content: {
+    width: "100%",
+    maxWidth: 440,
+    alignSelf: "center",
   },
   heroImage: {
     alignSelf: "stretch",
-    height: 160,
-    borderRadius: 14,
+    height: 180,
+    borderRadius: 16,
     marginTop: 8,
-    marginBottom: 18,
+    marginBottom: 22,
   },
   iconTile: {
     alignSelf: "center",
-    width: 52,
-    height: 52,
-    borderRadius: 14,
+    width: 64,
+    height: 64,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     marginTop: 8,
-    marginBottom: 18,
+    marginBottom: 22,
   },
-  iconGlyph: { fontSize: 22 },
+  iconGlyph: { fontSize: 27 },
   headline: {
-    fontSize: 20,
-    fontWeight: "700",
+    fontSize: 26,
+    fontWeight: "800",
     textAlign: "center",
-    marginBottom: 8,
+    marginBottom: 10,
   },
   subheadline: {
-    fontSize: 12.5,
-    lineHeight: 19,
+    fontSize: 15,
+    lineHeight: 21,
     textAlign: "center",
-    marginBottom: 20,
+    marginBottom: 26,
   },
-  features: { marginBottom: 20, gap: 10 },
-  featureRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
-  featureIcon: { width: 20, fontSize: 13 },
+  features: { marginBottom: 26, gap: 14 },
+  featureRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  featureIcon: { width: 24, fontSize: 15, lineHeight: 21 },
   featureBody: { flex: 1 },
-  featureTitle: { fontSize: 12.5, fontWeight: "600" },
-  featureDescription: { fontSize: 11, lineHeight: 15.5 },
-  packages: { gap: 10, marginBottom: 18 },
+  featureTitle: { fontSize: 15.5, fontWeight: "600", lineHeight: 21 },
+  featureDescription: { fontSize: 13, lineHeight: 18, marginTop: 1 },
+  packages: { gap: 12, marginBottom: 22 },
   packageRow: {
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 15,
   },
   badge: {
     position: "absolute",
-    top: -9,
-    right: 12,
+    top: -11,
+    right: 14,
     borderRadius: 20,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
   },
-  badgeText: { fontSize: 9, fontWeight: "700" },
-  packageTitle: { fontSize: 13, fontWeight: "600" },
-  packagePrice: { fontSize: 11.5, fontVariant: ["tabular-nums"] },
+  badgeText: { fontSize: 11, fontWeight: "700" },
+  packageTitle: { fontSize: 16, fontWeight: "600" },
+  packagePrice: { fontSize: 14, fontVariant: ["tabular-nums"], marginTop: 2 },
   cta: {
-    borderRadius: 8,
-    padding: 13,
+    borderRadius: 12,
+    padding: 16,
     alignItems: "center",
-    marginBottom: 12,
+    marginBottom: 14,
   },
-  ctaLabel: { fontSize: 14, fontWeight: "700" },
+  ctaLabel: { fontSize: 16.5, fontWeight: "700" },
   footer: { flexDirection: "row", justifyContent: "center" },
-  footerLink: { fontSize: 10.5 },
-  footerDot: { fontSize: 10.5 },
+  footerLink: { fontSize: 13, padding: 4 },
+  footerDot: { fontSize: 13, paddingVertical: 4 },
 });
