@@ -2,7 +2,13 @@ import { RevnixClient } from "./client";
 import type { RevnixConfig } from "./types";
 
 export { RevnixClient } from "./client";
-export { PurchaseBlockedError, RevnixError } from "./errors";
+export {
+  PurchaseBlockedError,
+  RevnixError,
+  RevnixNetworkError,
+  RevnixRateLimitError,
+  RevnixTimeoutError,
+} from "./errors";
 export { purchaseInputFromIap, type IapPurchase } from "./iap";
 export { memoryStorage, generateAnonymousId } from "./storage";
 export type {

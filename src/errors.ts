@@ -6,6 +6,12 @@ export class RevnixError extends Error {
     this.name = "RevnixError";
     this.status = status;
   }
+
+  /** Transient failures worth retrying (network, timeout, rate limit, 5xx).
+   *  4xx other than 429 are the caller's fault and won't fix themselves. */
+  get isRetryable(): boolean {
+    return this.status === 0 || this.status === 429 || this.status >= 500;
+  }
 }
 
 /** POST /v1/purchases returned 409: the store token belongs to another
@@ -15,5 +21,37 @@ export class PurchaseBlockedError extends RevnixError {
   constructor(message: string) {
     super(409, message);
     this.name = "PurchaseBlockedError";
+  }
+}
+
+/** C7: the request didn't complete within the configured timeout (default
+ *  10s). `fetch` has no default timeout on React Native / browsers, so without
+ *  this a slow or dead backend would hang the app until the OS TCP timeout. */
+export class RevnixTimeoutError extends RevnixError {
+  constructor(message = "Revnix request timed out") {
+    super(0, message);
+    this.name = "RevnixTimeoutError";
+  }
+}
+
+/** C7: the request never reached the server (offline, DNS/TLS failure, captive
+ *  portal). Distinct from an HTTP error so callers can show an offline state
+ *  instead of treating it as a bug. */
+export class RevnixNetworkError extends RevnixError {
+  constructor(message = "Revnix request failed to reach the server") {
+    super(0, message);
+    this.name = "RevnixNetworkError";
+  }
+}
+
+/** C7: the API returned 429 (rate limited). `retryAfterMs` mirrors the
+ *  server's Retry-After header when present — back off at least that long. */
+export class RevnixRateLimitError extends RevnixError {
+  readonly retryAfterMs?: number;
+
+  constructor(message: string, retryAfterMs?: number) {
+    super(429, message);
+    this.name = "RevnixRateLimitError";
+    this.retryAfterMs = retryAfterMs;
   }
 }

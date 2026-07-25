@@ -1,4 +1,10 @@
-import { PurchaseBlockedError, RevnixError } from "./errors";
+import {
+  PurchaseBlockedError,
+  RevnixError,
+  RevnixNetworkError,
+  RevnixRateLimitError,
+  RevnixTimeoutError,
+} from "./errors";
 import { generateAnonymousId, generateViewId, memoryStorage } from "./storage";
 import type {
   AliasResult,
@@ -14,7 +20,17 @@ import type {
 } from "./types";
 
 const CUSTOMER_ID_KEY = "revnix.customerId";
-const SDK_VERSION = "0.5.0";
+const ENTITLEMENTS_CACHE_KEY = "revnix.entitlements";
+const PENDING_PURCHASES_KEY = "revnix.pendingPurchases";
+const DEFAULT_TIMEOUT_MS = 10_000;
+const SDK_VERSION = "0.7.0";
+
+// C7: a purchase that failed to register, persisted so it survives an app
+// restart and retries later (idempotent server-side via purchaseKey).
+interface PendingPurchase {
+  customerId: string;
+  input: RegisterPurchaseInput;
+}
 
 export class RevnixClient {
   private readonly apiKey: string;
@@ -26,6 +42,7 @@ export class RevnixClient {
     platform?: string;
     appVersion?: string;
   };
+  private readonly requestTimeoutMs: number;
   private customerIdPromise: Promise<string>;
 
   constructor(config: RevnixConfig) {
@@ -37,7 +54,11 @@ export class RevnixClient {
     this.fetchImpl = config.fetch ?? fetch;
     this.reportInstalls = config.reportInstalls ?? true;
     this.installMetadata = config.installMetadata;
+    this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.customerIdPromise = this.loadCustomerId(config.customerId);
+    // C7: retry any purchases that failed to register on a previous launch, so
+    // a paying user never stays locked out because a POST didn't land.
+    void this.retryPendingPurchases().catch(() => {});
   }
 
   /** The id every call is made as: the stored identified/canonical id, or a
@@ -100,27 +121,87 @@ export class RevnixClient {
     input: RegisterPurchaseInput
   ): Promise<RegisterPurchaseResult> {
     const customerId = await this.customerIdPromise;
-    const result = await this.request<RegisterPurchaseResult>(
-      "POST",
-      "/v1/purchases",
-      { customerId, ...input }
-    );
-    // A transfer behavior may have resolved the purchase to a different
-    // canonical customer (e.g. restore after login) — follow it.
-    if (result.customerId !== customerId) {
-      await this.setCustomerId(result.customerId);
+    try {
+      const result = await this.postPurchase(customerId, input);
+      // A transfer behavior may have resolved the purchase to a different
+      // canonical customer (e.g. restore after login) — follow it.
+      if (result.customerId !== customerId) {
+        await this.setCustomerId(result.customerId);
+      }
+      return result;
+    } catch (err) {
+      // A blocked purchase (409) is a permanent domain rejection — don't queue.
+      if (err instanceof PurchaseBlockedError) throw err;
+      // C7: network/timeout/5xx — persist the receipt so the purchase isn't
+      // lost, then retry on the next launch / connectivity regain. Idempotent
+      // server-side (store.ts purchaseKey), so a later retry or the store
+      // webhook never double-counts. Rethrow so the caller can still react now.
+      await this.enqueuePurchase(customerId, input);
+      throw err;
     }
-    return result;
   }
 
-  /** Current entitlements for this customer, merged across every id linked
-   *  to them. `cursor` is the ledger position the read reflects. */
+  private postPurchase(
+    customerId: string,
+    input: RegisterPurchaseInput
+  ): Promise<RegisterPurchaseResult> {
+    return this.request<RegisterPurchaseResult>("POST", "/v1/purchases", {
+      customerId,
+      ...input,
+    });
+  }
+
+  /** C7: retry purchases that failed to register and were persisted locally.
+   *  Runs automatically at construction; call again when connectivity returns.
+   *  Idempotent and safe to call repeatedly. */
+  async retryPendingPurchases(): Promise<void> {
+    const queue = await this.readPurchaseQueue();
+    if (queue.length === 0) return;
+    const remaining: PendingPurchase[] = [];
+    for (const item of queue) {
+      try {
+        await this.postPurchase(item.customerId, item.input);
+        // Delivered — drop it from the queue.
+      } catch (err) {
+        if (err instanceof PurchaseBlockedError) continue; // permanent — drop
+        remaining.push(item); // still failing — keep for next time
+      }
+    }
+    await this.writePurchaseQueue(remaining);
+  }
+
+  /** Current entitlements for this customer, merged across every id linked to
+   *  them. Reads the network first and caches the result; if that read FAILS
+   *  (offline / incident) it falls back to the last cached entitlements with
+   *  `stale: true`, so a paying customer is never shown as unsubscribed just
+   *  because the network is down. Throws only when there is nothing cached. */
   async getEntitlements(): Promise<CustomerEntitlements> {
     const customerId = await this.customerIdPromise;
-    return await this.request<CustomerEntitlements>(
-      "GET",
-      `/v1/customers/${encodeURIComponent(customerId)}/entitlements`
-    );
+    try {
+      const fresh = await this.request<CustomerEntitlements>(
+        "GET",
+        `/v1/customers/${encodeURIComponent(customerId)}/entitlements`
+      );
+      await this.writeEntitlementsCache(customerId, fresh);
+      return { ...fresh, stale: false, fetchedAt: Date.now() };
+    } catch (err) {
+      const cached = await this.readEntitlementsCache(customerId);
+      if (cached) {
+        return { ...cached.data, stale: true, fetchedAt: cached.fetchedAt };
+      }
+      throw err;
+    }
+  }
+
+  /** C7: the last entitlements cached for the current customer, with NO network
+   *  call — for an instant, offline-safe gate at launch. Always `stale: true`;
+   *  follow with getEntitlements() to revalidate. Null if nothing is cached. */
+  async getCachedEntitlements(): Promise<CustomerEntitlements | null> {
+    const customerId = await this.customerIdPromise;
+    const cached = await this.readEntitlementsCache(customerId);
+    return cached
+      ? { ...cached.data, stale: true, fetchedAt: cached.fetchedAt }
+      : null;
   }
 
   /** Convenience: is one entitlement active right now? */
@@ -206,19 +287,117 @@ export class RevnixClient {
     await this.storage.setItem(CUSTOMER_ID_KEY, customerId);
   }
 
+  // ——— C7: entitlement cache (best-effort; storage failures never throw) ———
+
+  private async writeEntitlementsCache(
+    customerId: string,
+    data: CustomerEntitlements
+  ): Promise<void> {
+    try {
+      await this.storage.setItem(
+        ENTITLEMENTS_CACHE_KEY,
+        JSON.stringify({ customerId, data, fetchedAt: Date.now() })
+      );
+    } catch {
+      // Caching is best-effort — a failure to persist must never break a read.
+    }
+  }
+
+  private async readEntitlementsCache(
+    customerId: string
+  ): Promise<{ data: CustomerEntitlements; fetchedAt: number } | null> {
+    try {
+      const raw = await this.storage.getItem(ENTITLEMENTS_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as {
+        customerId: string;
+        data: CustomerEntitlements;
+        fetchedAt: number;
+      };
+      // Only trust the cache for the id it was written under — after a
+      // logout/identify the cached entitlements belong to a different customer.
+      if (parsed.customerId !== customerId) return null;
+      return { data: parsed.data, fetchedAt: parsed.fetchedAt };
+    } catch {
+      return null;
+    }
+  }
+
+  // ——— C7: persisted purchase retry queue ———
+
+  private async readPurchaseQueue(): Promise<PendingPurchase[]> {
+    try {
+      const raw = await this.storage.getItem(PENDING_PURCHASES_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as PendingPurchase[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private async writePurchaseQueue(queue: PendingPurchase[]): Promise<void> {
+    try {
+      await this.storage.setItem(PENDING_PURCHASES_KEY, JSON.stringify(queue));
+    } catch {
+      // best-effort
+    }
+  }
+
+  private async enqueuePurchase(
+    customerId: string,
+    input: RegisterPurchaseInput
+  ): Promise<void> {
+    const queue = await this.readPurchaseQueue();
+    const key = (p: RegisterPurchaseInput) =>
+      `${p.source}:${p.token}:${p.transactionId}`;
+    // Repeated failures of the same purchase collapse to one queued entry.
+    if (!queue.some((q) => key(q.input) === key(input))) {
+      queue.push({ customerId, input });
+      await this.writePurchaseQueue(queue);
+    }
+  }
+
   private async request<T>(
     method: "GET" | "POST",
     path: string,
     body?: unknown
   ): Promise<T> {
-    const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-      },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    });
+    // C7: abort the request after requestTimeoutMs so a slow or dead backend
+    // can't hang the app. AbortController is guarded for very old runtimes.
+    const controller =
+      typeof AbortController !== "undefined" ? new AbortController() : undefined;
+    const timer = controller
+      ? setTimeout(() => controller.abort(), this.requestTimeoutMs)
+      : undefined;
+
+    let res: Response;
+    try {
+      res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+    } catch (err) {
+      if (
+        controller?.signal.aborted ||
+        (err instanceof Error && err.name === "AbortError")
+      ) {
+        throw new RevnixTimeoutError(
+          `Revnix request to ${path} timed out after ${this.requestTimeoutMs}ms`
+        );
+      }
+      throw new RevnixNetworkError(
+        err instanceof Error ? err.message : "network request failed"
+      );
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+
     let parsed: unknown;
     try {
       parsed = await res.json();
@@ -231,6 +410,15 @@ export class RevnixClient {
         `Revnix request failed (${res.status})`;
       if (res.status === 409 && path === "/v1/purchases") {
         throw new PurchaseBlockedError(message);
+      }
+      if (res.status === 429) {
+        const retryAfter = Number(res.headers.get("Retry-After"));
+        throw new RevnixRateLimitError(
+          message,
+          Number.isFinite(retryAfter) && retryAfter > 0
+            ? retryAfter * 1000
+            : undefined
+        );
       }
       throw new RevnixError(res.status, message);
     }
