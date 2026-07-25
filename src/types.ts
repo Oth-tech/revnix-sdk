@@ -25,6 +25,10 @@ export interface RevnixConfig {
   reportInstalls?: boolean;
   /** Optional device context attached to the install report. */
   installMetadata?: { platform?: string; appVersion?: string };
+  /** C7: per-request timeout in ms (AbortController-based). Defaults to 10000.
+   *  A slow or dead backend then fails fast with RevnixTimeoutError instead of
+   *  hanging the app until the OS TCP timeout (60–120s+). */
+  requestTimeoutMs?: number;
 }
 
 export interface RevnixStorage {
@@ -81,6 +85,13 @@ export interface CustomerEntitlements {
   /** Ledger cursor this read reflects. */
   cursor: number;
   entitlements: Entitlement[];
+  /** C7 (SDK-populated): true when this was served from the local cache
+   *  because the live read failed (offline / incident) — a paying customer is
+   *  shown as subscribed from cache rather than as unsubscribed. false on a
+   *  fresh server read. */
+  stale?: boolean;
+  /** C7 (SDK-populated): unix ms these entitlements were fetched/cached. */
+  fetchedAt?: number;
 }
 
 // ——— POST /v1/identify · POST /v1/customers/{id}/alias ———
