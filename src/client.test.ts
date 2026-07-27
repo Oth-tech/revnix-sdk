@@ -78,7 +78,11 @@ describe("customer id lifecycle", () => {
   test("a failed install report never surfaces", async () => {
     const fetchImpl = jest.fn<typeof fetch>();
     fetchImpl.mockRejectedValueOnce(new Error("offline"));
-    const client = new RevnixClient({ ...CONFIG, fetch: fetchImpl });
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage: memoryStorage(),
+      fetch: fetchImpl,
+    });
     const id = await client.getCustomerId();
     await new Promise((r) => setTimeout(r, 0));
     expect(id).toMatch(/^rvx_anon_/);
@@ -335,6 +339,76 @@ describe("paywall view reporting", () => {
     });
     await client.getCustomerId();
     client.logPaywallShown();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+// CTO-SCALE-REVIEW M5: omitting `storage` used to silently run memory-only —
+// every launch a new anonymous customer + a new install report. Now the web
+// falls back to localStorage automatically, and truly memory-only mode warns
+// loudly and never fabricates installs.
+describe("M5: storage default behavior", () => {
+  test("web: no storage configured → localStorage picked up automatically", async () => {
+    const backing = new Map<string, string>();
+    (globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: (k: string) => backing.get(k) ?? null,
+      setItem: (k: string, v: string) => void backing.set(k, v),
+      removeItem: (k: string) => void backing.delete(k),
+    };
+    try {
+      const fetchImpl = mockFetch({
+        status: 201,
+        body: { eventId: "evt1", seq: 1, duplicate: false },
+      });
+      const client = new RevnixClient({ ...CONFIG, fetch: fetchImpl });
+      const id = await client.getCustomerId();
+      await new Promise((r) => setTimeout(r, 0));
+      // Persistent → the install IS reported, once.
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+      // A second client (same runtime = same localStorage) resumes the id —
+      // no phantom new customer, no second install.
+      const again = new RevnixClient({ ...CONFIG, fetch: fetchImpl });
+      expect(await again.getCustomerId()).toBe(id);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  });
+
+  test("memory-only (no storage, no localStorage): warns once and never reports installs", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const fetchImpl = jest.fn<typeof fetch>();
+      const client = new RevnixClient({ ...CONFIG, fetch: fetchImpl });
+      const id = await client.getCustomerId();
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(id).toMatch(/^rvx_anon_/); // the client still works…
+      expect(fetchImpl).not.toHaveBeenCalled(); // …but fabricates NO install
+      expect(
+        warn.mock.calls.some(
+          (c) => typeof c[0] === "string" && c[0].includes("[revnix]")
+        )
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("an explicit adapter keeps full behavior (installs report)", async () => {
+    const fetchImpl = mockFetch({
+      status: 201,
+      body: { eventId: "evt1", seq: 1, duplicate: false },
+    });
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage: memoryStorage(), // explicitly chosen → developer's call
+      fetch: fetchImpl,
+    });
+    await client.getCustomerId();
     await new Promise((r) => setTimeout(r, 0));
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
