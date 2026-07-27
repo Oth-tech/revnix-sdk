@@ -5,7 +5,13 @@ import { purchaseInputFromIap } from "./iap";
 import { memoryStorage } from "./storage";
 import type { RevnixStorage } from "./types";
 
-const CONFIG = { apiKey: "rvx_test_abc", baseUrl: "https://demo.convex.site/" };
+// readYourWritesDelaysMs: [] keeps the pre-M9 suites byte-identical (no
+// post-purchase entitlement poll); the M9 describe below opts back in.
+const CONFIG = {
+  apiKey: "rvx_test_abc",
+  baseUrl: "https://demo.convex.site/",
+  readYourWritesDelaysMs: [] as number[],
+};
 
 type FetchMock = jest.Mock<typeof fetch>;
 
@@ -411,5 +417,90 @@ describe("M5: storage default behavior", () => {
     await client.getCustomerId();
     await new Promise((r) => setTimeout(r, 0));
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+// CTO-SCALE-REVIEW M9: read-your-writes. registerPurchase re-fetches
+// entitlements until the response cursor covers the purchase's seq, so the
+// caller (and the C7 cache) can't observe pre-purchase state right after
+// buying.
+describe("M9: read-your-writes after registerPurchase", () => {
+  const PURCHASE = {
+    productId: "pro.monthly",
+    source: "apple" as const,
+    token: "orig-1",
+    transactionId: "txn-1",
+    occurredAt: 1,
+  };
+  const ENT = (cursor: number, isActive: boolean) => ({
+    body: {
+      customerId: "rvx_anon_x",
+      cursor,
+      entitlements: [{ entitlementId: "pro", isActive }],
+    },
+  });
+
+  test("polls until the cursor covers the purchase, then caches the fresh read", async () => {
+    const storage = memoryStorage();
+    const fetchImpl = mockFetch(
+      { status: 201, body: { eventId: "e1", seq: 5, duplicate: false, customerId: "rvx_anon_x" } },
+      ENT(3, false), // first read: ledger cursor behind the purchase
+      ENT(5, true)   // caught up — entitlement visible
+    );
+    const client = new RevnixClient({
+      ...CONFIG,
+      customerId: "rvx_anon_x",
+      storage,
+      fetch: fetchImpl,
+      reportInstalls: false,
+      readYourWritesDelaysMs: [1, 1, 1],
+    });
+    const result = await client.registerPurchase(PURCHASE);
+    expect(result.seq).toBe(5);
+    // purchase POST + 2 entitlement GETs
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    // The C7 cache now holds the POST-purchase state.
+    const cached = await client.getCachedEntitlements();
+    expect(cached?.cursor).toBe(5);
+    expect(cached?.entitlements[0]).toMatchObject({ entitlementId: "pro", isActive: true });
+  });
+
+  test("gives up after the delays run out — the purchase still resolves", async () => {
+    const fetchImpl = mockFetch(
+      { status: 201, body: { eventId: "e1", seq: 9, duplicate: false, customerId: "rvx_anon_x" } },
+      ENT(2, false),
+      ENT(2, false)
+    );
+    const client = new RevnixClient({
+      ...CONFIG,
+      customerId: "rvx_anon_x",
+      storage: memoryStorage(),
+      fetch: fetchImpl,
+      reportInstalls: false,
+      readYourWritesDelaysMs: [1],
+    });
+    const result = await client.registerPurchase(PURCHASE);
+    expect(result.seq).toBe(9); // never throws, never spins forever
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  test("an entitlements failure never fails the registered purchase", async () => {
+    const fetchImpl = jest.fn<typeof fetch>();
+    fetchImpl.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ eventId: "e1", seq: 2, duplicate: false, customerId: "rvx_anon_x" }),
+        { status: 201 }
+      )
+    );
+    fetchImpl.mockRejectedValue(new Error("offline right after purchase"));
+    const client = new RevnixClient({
+      ...CONFIG,
+      customerId: "rvx_anon_x",
+      storage: memoryStorage(),
+      fetch: fetchImpl,
+      reportInstalls: false,
+      readYourWritesDelaysMs: [1],
+    });
+    await expect(client.registerPurchase(PURCHASE)).resolves.toMatchObject({ seq: 2 });
   });
 });

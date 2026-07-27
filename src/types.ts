@@ -11,6 +11,10 @@ export interface RevnixConfig {
   apiKey: string;
   /** Convex site URL of the Revnix deployment, e.g. https://xyz.convex.site */
   baseUrl: string;
+  /** CTO-SCALE-REVIEW M9: retry delays for the read-your-writes poll after
+   *  registerPurchase (entitlements re-fetched until the read's cursor
+   *  reflects the purchase). Pass [] to disable. Default [250,500,1000,2000]. */
+  readYourWritesDelaysMs?: number[];
   /** Persistent key-value storage for the customer id. Pass an adapter over
    *  MMKV/AsyncStorage in React Native; defaults to in-memory (ids reset on
    *  every app launch — fine for tests, wrong for production). */

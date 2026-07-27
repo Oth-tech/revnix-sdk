@@ -43,6 +43,7 @@ export class RevnixClient {
     appVersion?: string;
   };
   private readonly requestTimeoutMs: number;
+  private readonly readYourWritesDelaysMs: number[];
   private customerIdPromise: Promise<string>;
 
   constructor(config: RevnixConfig) {
@@ -58,6 +59,8 @@ export class RevnixClient {
     this.reportInstalls = (config.reportInstalls ?? true) && resolved.persistent;
     this.installMetadata = config.installMetadata;
     this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.readYourWritesDelaysMs =
+      config.readYourWritesDelaysMs ?? [250, 500, 1000, 2000];
     this.customerIdPromise = this.loadCustomerId(config.customerId);
     // C7: retry any purchases that failed to register on a previous launch, so
     // a paying user never stays locked out because a POST didn't land.
@@ -131,6 +134,14 @@ export class RevnixClient {
       if (result.customerId !== customerId) {
         await this.setCustomerId(result.customerId);
       }
+      // M9: read-your-writes — re-fetch entitlements until the read reflects
+      // this purchase (cursor >= seq), warming the C7 cache at exactly the
+      // moment it matters. Best-effort: a failure here never fails the
+      // purchase (it already registered). Disabled entirely by
+      // readYourWritesDelaysMs: [].
+      if (this.readYourWritesDelaysMs.length > 0) {
+        await this.waitForEntitlements(result.seq).catch(() => {});
+      }
       return result;
     } catch (err) {
       // A blocked purchase (409) is a permanent domain rejection — don't queue.
@@ -194,6 +205,22 @@ export class RevnixClient {
       }
       throw err;
     }
+  }
+
+  /** M9: read-your-writes — poll getEntitlements until the response's ledger
+   *  cursor is at least `seq` (i.e. the read provably includes that write),
+   *  then resolve with it. Resolves with the LAST read if the delays run out
+   *  or reads only come from the stale cache — never spins forever. Called
+   *  automatically by registerPurchase; public for manual flows (e.g. after
+   *  a webhook-driven grant the app learns about out-of-band). */
+  async waitForEntitlements(seq: number): Promise<CustomerEntitlements> {
+    let last = await this.getEntitlements();
+    for (const delayMs of this.readYourWritesDelaysMs) {
+      if (!last.stale && last.cursor >= seq) return last;
+      await new Promise((r) => setTimeout(r, delayMs));
+      last = await this.getEntitlements();
+    }
+    return last;
   }
 
   /** C7: the last entitlements cached for the current customer, with NO network
