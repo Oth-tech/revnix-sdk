@@ -5,7 +5,7 @@ import {
   RevnixRateLimitError,
   RevnixTimeoutError,
 } from "./errors";
-import { generateAnonymousId, generateViewId, memoryStorage } from "./storage";
+import { generateAnonymousId, generateViewId, resolveStorage } from "./storage";
 import type {
   AliasResult,
   CustomerEntitlements,
@@ -50,9 +50,12 @@ export class RevnixClient {
     if (!config.baseUrl) throw new Error("Revnix: baseUrl is required");
     this.apiKey = config.apiKey;
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
-    this.storage = config.storage ?? memoryStorage();
+    // M5: web falls back to localStorage automatically; truly memory-only
+    // (RN without an adapter) warns and disables install reporting below.
+    const resolved = resolveStorage(config.storage);
+    this.storage = resolved.storage;
     this.fetchImpl = config.fetch ?? fetch;
-    this.reportInstalls = config.reportInstalls ?? true;
+    this.reportInstalls = (config.reportInstalls ?? true) && resolved.persistent;
     this.installMetadata = config.installMetadata;
     this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.customerIdPromise = this.loadCustomerId(config.customerId);

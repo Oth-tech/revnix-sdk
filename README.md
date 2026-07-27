@@ -29,8 +29,14 @@ Revnix.configure({
 ```
 
 The API key fixes the app **and** environment server-side — a test key can
-never write into production. Pass a persistent `storage` adapter or every
-app launch becomes a new anonymous customer.
+never write into production.
+
+**Storage:** pass a persistent `storage` adapter (MMKV/AsyncStorage on React
+Native). On the web, omitting it automatically falls back to `localStorage`.
+If neither is available the SDK runs memory-only: it still works, but it
+warns loudly and **disables install reporting** — otherwise every launch
+would look like a new anonymous customer and inflate your install metrics
+(prior purchases would also not be attached across launches).
 
 ## Identity
 
