@@ -70,6 +70,12 @@ try {
 Registration and the store's own webhook share an idempotency key — whichever
 arrives first wins, the other becomes a no-op.
 
+**Read-your-writes:** after a successful `registerPurchase` the SDK re-fetches
+entitlements until the response's ledger cursor covers the purchase — so
+`getEntitlements()` / `isEntitled()` right after buying never show
+pre-purchase state, and the offline cache is warm at exactly the moment it
+matters. Tune or disable via `readYourWritesDelaysMs` (pass `[]` to disable).
+
 ## Entitlements & placements
 
 ```ts
