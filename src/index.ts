@@ -4,6 +4,7 @@ import type { RevnixConfig } from "./types";
 export { RevnixClient } from "./client";
 export {
   PurchaseBlockedError,
+  RevnixAuthError,
   RevnixError,
   RevnixNetworkError,
   RevnixRateLimitError,

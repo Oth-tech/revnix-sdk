@@ -1,5 +1,6 @@
 import {
   PurchaseBlockedError,
+  RevnixAuthError,
   RevnixError,
   RevnixNetworkError,
   RevnixRateLimitError,
@@ -440,6 +441,9 @@ export class RevnixClient {
         `Revnix request failed (${res.status})`;
       if (res.status === 409 && path === "/v1/purchases") {
         throw new PurchaseBlockedError(message);
+      }
+      if (res.status === 401 || res.status === 403) {
+        throw new RevnixAuthError(res.status, message);
       }
       if (res.status === 429) {
         const retryAfter = Number(res.headers.get("Retry-After"));
