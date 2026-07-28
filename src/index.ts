@@ -12,6 +12,7 @@ export {
 } from "./errors";
 export { purchaseInputFromIap, type IapPurchase } from "./iap";
 export { memoryStorage, generateAnonymousId } from "./storage";
+export { SDK_VERSION } from "./version";
 export type {
   AliasResult,
   CustomerEntitlements,
