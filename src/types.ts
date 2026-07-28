@@ -6,8 +6,10 @@ export type Environment = "sandbox" | "production";
 export type Store = "apple" | "google";
 
 export interface RevnixConfig {
-  /** API key issued from the Revnix dashboard (rvx_live_… or rvx_test_…).
-   *  The key fixes both the app and the environment server-side. */
+  /** API key issued from the Revnix dashboard — publishable (rvx_pk_live_… /
+   *  rvx_pk_test_…, safe on-device) or secret (rvx_sk_…, server-side only;
+   *  required for identify/alias). Legacy rvx_live_…/rvx_test_… keys have
+   *  full access. The key fixes both the app and the environment server-side. */
   apiKey: string;
   /** Convex site URL of the Revnix deployment, e.g. https://xyz.convex.site */
   baseUrl: string;
