@@ -1,4 +1,4 @@
-import type { RevnixStorage } from "./types";
+import type { RevnixStorage } from "./types.js";
 
 /** Default storage: survives only the current JS runtime. Real apps must
  *  pass a persistent adapter (MMKV, AsyncStorage, localStorage) or every
