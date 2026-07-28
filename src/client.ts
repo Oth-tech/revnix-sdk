@@ -5,9 +5,9 @@ import {
   RevnixNetworkError,
   RevnixRateLimitError,
   RevnixTimeoutError,
-} from "./errors";
-import { generateAnonymousId, generateViewId, resolveStorage } from "./storage";
-import { SDK_VERSION } from "./version";
+} from "./errors.js";
+import { generateAnonymousId, generateViewId, resolveStorage } from "./storage.js";
+import { SDK_VERSION } from "./version.js";
 import type {
   AliasResult,
   CustomerEntitlements,
@@ -19,7 +19,7 @@ import type {
   RegisterPurchaseResult,
   RevnixConfig,
   RevnixStorage,
-} from "./types";
+} from "./types.js";
 
 const CUSTOMER_ID_KEY = "revnix.customerId";
 const ENTITLEMENTS_CACHE_KEY = "revnix.entitlements";

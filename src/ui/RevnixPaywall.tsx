@@ -22,7 +22,7 @@ import {
   type ViewStyle,
 } from "react-native";
 
-import type { PaywallConfig } from "../types";
+import type { PaywallConfig } from "../types.js";
 
 /** One purchasable row. `priceLabel` must come from the store (localized). */
 export interface RevnixPaywallPackage {

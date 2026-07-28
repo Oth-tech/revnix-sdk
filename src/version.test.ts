@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@jest/globals";
-import { SDK_VERSION } from "./version";
+import { SDK_VERSION } from "./version.js";
 
 // L3 regression guard: client.ts once reported 0.7.0 while the package
 // shipped 0.9.0. The version now lives in exactly one src file; this pins

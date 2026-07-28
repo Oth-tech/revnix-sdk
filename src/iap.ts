@@ -1,4 +1,4 @@
-import type { RegisterPurchaseInput, Store } from "./types";
+import type { RegisterPurchaseInput, Store } from "./types.js";
 
 // Glue for react-native-iap: turn its purchase object into the
 // RegisterPurchaseInput the Revnix API expects. Structurally typed so the

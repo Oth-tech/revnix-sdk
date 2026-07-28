@@ -1,11 +1,11 @@
 import { describe, expect, jest, test } from "@jest/globals";
-import { RevnixClient } from "./client";
+import { RevnixClient } from "./client.js";
 import {
   RevnixNetworkError,
   RevnixRateLimitError,
   RevnixTimeoutError,
-} from "./errors";
-import { memoryStorage } from "./storage";
+} from "./errors.js";
+import { memoryStorage } from "./storage.js";
 
 // C7: SDK resilience — request timeouts, offline entitlement cache, and a
 // persisted purchase retry queue.
