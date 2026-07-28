@@ -61,13 +61,18 @@ export function resolveStorage(configured?: RevnixStorage): {
 function randomHex(byteLength: number): string {
   const bytes = new Uint8Array(byteLength);
   const cryptoObj = (globalThis as { crypto?: Crypto }).crypto;
-  if (cryptoObj?.getRandomValues) {
-    cryptoObj.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < bytes.length; i++) {
-      bytes[i] = Math.floor(Math.random() * 256);
-    }
+  // L2: no Math.random fallback — a guessable customer id is readable by
+  // anyone holding the public key, so failing loudly beats failing silently.
+  // Every supported runtime (browsers, RN ≥0.72 via Hermes, Node ≥19) exposes
+  // getRandomValues; older Node needs `globalThis.crypto = require("crypto").webcrypto`.
+  if (!cryptoObj?.getRandomValues) {
+    throw new Error(
+      "[revnix] crypto.getRandomValues is unavailable in this runtime — " +
+        "cannot generate a secure customer id. Polyfill globalThis.crypto " +
+        "or pass an explicit `customerId` in configure()."
+    );
   }
+  cryptoObj.getRandomValues(bytes);
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
