@@ -1,16 +1,18 @@
-import { RevnixClient } from "./client";
-import type { RevnixConfig } from "./types";
+import { RevnixClient } from "./client.js";
+import type { RevnixConfig } from "./types.js";
 
-export { RevnixClient } from "./client";
+export { RevnixClient } from "./client.js";
 export {
   PurchaseBlockedError,
+  RevnixAuthError,
   RevnixError,
   RevnixNetworkError,
   RevnixRateLimitError,
   RevnixTimeoutError,
-} from "./errors";
-export { purchaseInputFromIap, type IapPurchase } from "./iap";
-export { memoryStorage, generateAnonymousId } from "./storage";
+} from "./errors.js";
+export { purchaseInputFromIap, type IapPurchase } from "./iap.js";
+export { memoryStorage, generateAnonymousId } from "./storage.js";
+export { SDK_VERSION } from "./version.js";
 export type {
   AliasResult,
   CustomerEntitlements,
@@ -31,7 +33,7 @@ export type {
   RevnixConfig,
   RevnixStorage,
   Store,
-} from "./types";
+} from "./types.js";
 
 let instance: RevnixClient | null = null;
 

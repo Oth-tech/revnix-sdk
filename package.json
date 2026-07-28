@@ -1,6 +1,6 @@
 {
   "name": "revnix-react",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Revnix SDK for React, React Native & Next.js — purchase registration, entitlements, identity, and placements over the Revnix /v1 API.",
   "license": "MIT",
   "keywords": [
@@ -18,7 +18,22 @@
     "access": "public"
   },
   "main": "dist/index.js",
+  "module": "dist/esm/index.js",
   "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/index.js"
+    },
+    "./ui": {
+      "types": "./ui.d.ts",
+      "import": "./dist/esm/ui/index.js",
+      "require": "./ui.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "src",
@@ -27,7 +42,9 @@
     "!src/**/*.test.ts"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "npm run build:cjs && npm run build:esm",
+    "build:cjs": "tsc",
+    "build:esm": "tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', JSON.stringify({ type: 'module' }))\"",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "jest",

@@ -1,9 +1,9 @@
 import { describe, expect, jest, test } from "@jest/globals";
-import { RevnixClient } from "./client";
-import { PurchaseBlockedError, RevnixError } from "./errors";
-import { purchaseInputFromIap } from "./iap";
-import { memoryStorage } from "./storage";
-import type { RevnixStorage } from "./types";
+import { RevnixClient } from "./client.js";
+import { PurchaseBlockedError, RevnixError } from "./errors.js";
+import { purchaseInputFromIap } from "./iap.js";
+import { memoryStorage } from "./storage.js";
+import type { RevnixStorage } from "./types.js";
 
 // readYourWritesDelaysMs: [] keeps the pre-M9 suites byte-identical (no
 // post-purchase entitlement poll); the M9 describe below opts back in.

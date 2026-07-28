@@ -1,11 +1,13 @@
 import {
   PurchaseBlockedError,
+  RevnixAuthError,
   RevnixError,
   RevnixNetworkError,
   RevnixRateLimitError,
   RevnixTimeoutError,
-} from "./errors";
-import { generateAnonymousId, generateViewId, resolveStorage } from "./storage";
+} from "./errors.js";
+import { generateAnonymousId, generateViewId, resolveStorage } from "./storage.js";
+import { SDK_VERSION } from "./version.js";
 import type {
   AliasResult,
   CustomerEntitlements,
@@ -17,13 +19,12 @@ import type {
   RegisterPurchaseResult,
   RevnixConfig,
   RevnixStorage,
-} from "./types";
+} from "./types.js";
 
 const CUSTOMER_ID_KEY = "revnix.customerId";
 const ENTITLEMENTS_CACHE_KEY = "revnix.entitlements";
 const PENDING_PURCHASES_KEY = "revnix.pendingPurchases";
 const DEFAULT_TIMEOUT_MS = 10_000;
-const SDK_VERSION = "0.7.0";
 
 // C7: a purchase that failed to register, persisted so it survives an app
 // restart and retries later (idempotent server-side via purchaseKey).
@@ -407,6 +408,9 @@ export class RevnixClient {
         method,
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
+          // L3: identify the SDK on EVERY request (reads included) so the
+          // backend can triage by version without depending on body fields.
+          "X-Revnix-SDK": `revnix-react/${SDK_VERSION}`,
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -440,6 +444,9 @@ export class RevnixClient {
         `Revnix request failed (${res.status})`;
       if (res.status === 409 && path === "/v1/purchases") {
         throw new PurchaseBlockedError(message);
+      }
+      if (res.status === 401 || res.status === 403) {
+        throw new RevnixAuthError(res.status, message);
       }
       if (res.status === 429) {
         const retryAfter = Number(res.headers.get("Retry-After"));

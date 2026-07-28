@@ -5,4 +5,4 @@ export {
   type RevnixPaywallPackage,
   type RevnixPaywallProps,
   type RevnixPaywallTheme,
-} from "./RevnixPaywall";
+} from "./RevnixPaywall.js";

@@ -44,6 +44,16 @@ export class RevnixNetworkError extends RevnixError {
   }
 }
 
+/** L4: the API returned 401/403 — the key is missing, revoked, or the wrong
+ *  kind (e.g. a secret key where a public key is required). Retrying is
+ *  pointless; the fix is reconfiguration, so surface this to the developer. */
+export class RevnixAuthError extends RevnixError {
+  constructor(status: number, message: string) {
+    super(status, message);
+    this.name = "RevnixAuthError";
+  }
+}
+
 /** C7: the API returned 429 (rate limited). `retryAfterMs` mirrors the
  *  server's Retry-After header when present — back off at least that long. */
 export class RevnixRateLimitError extends RevnixError {
