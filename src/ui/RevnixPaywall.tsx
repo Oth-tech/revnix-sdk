@@ -244,7 +244,10 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
               >
                 {badged ? (
                   <View style={[styles.badge, { backgroundColor: accent }]}>
-                    <Text style={[styles.badgeText, { color: theme.accentInk }]}>
+                    <Text
+                      numberOfLines={1}
+                      style={[styles.badgeText, { color: theme.accentInk }]}
+                    >
                       {config.badgeText}
                     </Text>
                   </View>
@@ -379,6 +382,10 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     paddingHorizontal: 10,
     paddingVertical: 3,
+    // Absolute views take no width constraint from the card — a long badge
+    // string used to grow past the card edge (kept in lockstep with the
+    // dashboard preview, which truncates the same way).
+    maxWidth: "80%",
   },
   badgeText: { fontSize: 11, fontWeight: "700" },
   packageTitle: { fontSize: 16, fontWeight: "600" },
