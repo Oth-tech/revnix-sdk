@@ -131,6 +131,65 @@ describe("C7 entitlement cache", () => {
   });
 });
 
+describe("REV-157 local expiry on cached entitlements", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  function entBody(expiresAt?: number) {
+    return {
+      customerId: "cust-c7",
+      cursor: 5,
+      entitlements: [
+        { entitlementId: "pro", isActive: true, expiresAt, sources: [] },
+      ],
+    };
+  }
+
+  async function cachedServe(expiresAt?: number) {
+    const storage = memoryStorage();
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(entBody(expiresAt))) // 1st: live
+      .mockRejectedValue(new Error("offline")); // then: down
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: fetchImpl,
+    });
+    const fresh = await client.getEntitlements();
+    // The fresh read is authoritative — served verbatim even when the local
+    // clock disagrees.
+    expect(fresh.entitlements[0]?.isActive).toBe(true);
+    return { client, cached: await client.getEntitlements() };
+  }
+
+  test("expired beyond the 3-day grace → served inactive from cache", async () => {
+    const { client, cached } = await cachedServe(Date.now() - 5 * DAY_MS);
+    expect(cached.stale).toBe(true);
+    expect(cached.entitlements[0]?.isActive).toBe(false);
+    expect(await client.isEntitled("pro")).toBe(false);
+  });
+
+  test("expired within the grace → still active (the renewal an offline device cannot see)", async () => {
+    const { client, cached } = await cachedServe(Date.now() - 1 * DAY_MS);
+    expect(cached.stale).toBe(true);
+    expect(cached.entitlements[0]?.isActive).toBe(true);
+    expect(await client.isEntitled("pro")).toBe(true);
+  });
+
+  test("no expiresAt (lifetime/grant) → untouched", async () => {
+    const { cached } = await cachedServe(undefined);
+    expect(cached.entitlements[0]?.isActive).toBe(true);
+  });
+
+  test("getCachedEntitlements applies the same evaluation", async () => {
+    const { client } = await cachedServe(Date.now() - 5 * DAY_MS);
+    const cached = await client.getCachedEntitlements();
+    expect(cached?.entitlements[0]?.isActive).toBe(false);
+  });
+});
+
 describe("C7 persisted purchase retry", () => {
   const PURCHASE = {
     source: "apple" as const,

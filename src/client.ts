@@ -24,7 +24,16 @@ import type {
 const CUSTOMER_ID_KEY = "revnix.customerId";
 const ENTITLEMENTS_CACHE_KEY = "revnix.entitlements";
 const PENDING_PURCHASES_KEY = "revnix.pendingPurchases";
+const PLACEMENTS_CACHE_KEY = "revnix.placements";
 const DEFAULT_TIMEOUT_MS = 10_000;
+
+// REV-157: how long past a cached entitlement's expiresAt it is still served
+// as active. An offline device cannot see the renewal that most likely
+// happened at expiry — cutting access at the cached timestamp would lock a
+// paying subscriber out mid-flight. Three days absorbs the overwhelmingly
+// common auto-renew; a genuinely lapsed subscription still shuts off. Only
+// cache-served reads are re-evaluated; a fresh server read is authoritative.
+const LOCAL_EXPIRY_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
 
 // C7: a purchase that failed to register, persisted so it survives an app
 // restart and retries later (idempotent server-side via purchaseKey).
@@ -66,6 +75,12 @@ export class RevnixClient {
     // C7: retry any purchases that failed to register on a previous launch, so
     // a paying user never stays locked out because a POST didn't land.
     void this.retryPendingPurchases().catch(() => {});
+    // REV-157: warm the placement cache at launch, so the first paywall of the
+    // session can render offline. Fire-and-forget; a failed key just stays on
+    // whatever an earlier launch cached.
+    for (const key of config.prefetchPlacements ?? []) {
+      void this.resolvePlacement(key).catch(() => {});
+    }
   }
 
   /** The id every call is made as: the stored identified/canonical id, or a
@@ -202,7 +217,11 @@ export class RevnixClient {
     } catch (err) {
       const cached = await this.readEntitlementsCache(customerId);
       if (cached) {
-        return { ...cached.data, stale: true, fetchedAt: cached.fetchedAt };
+        return this.withLocalExpiry({
+          ...cached.data,
+          stale: true,
+          fetchedAt: cached.fetchedAt,
+        });
       }
       throw err;
     }
@@ -231,8 +250,30 @@ export class RevnixClient {
     const customerId = await this.customerIdPromise;
     const cached = await this.readEntitlementsCache(customerId);
     return cached
-      ? { ...cached.data, stale: true, fetchedAt: cached.fetchedAt }
+      ? this.withLocalExpiry({
+          ...cached.data,
+          stale: true,
+          fetchedAt: cached.fetchedAt,
+        })
       : null;
+  }
+
+  /** REV-157: cached entitlements are a snapshot — re-evaluate expiry against
+   *  the local clock when serving them, so a subscription that ended long ago
+   *  never stays "active" offline forever. Active entitlements keep access
+   *  for LOCAL_EXPIRY_GRACE_MS past expiresAt (the renewal an offline device
+   *  cannot see yet). Inactive stays inactive; no expiresAt (lifetime/grant)
+   *  is untouched. */
+  private withLocalExpiry(data: CustomerEntitlements): CustomerEntitlements {
+    const cutoff = Date.now() - LOCAL_EXPIRY_GRACE_MS;
+    return {
+      ...data,
+      entitlements: data.entitlements.map((e) =>
+        e.isActive && e.expiresAt !== undefined && e.expiresAt < cutoff
+          ? { ...e, isActive: false }
+          : e
+      ),
+    };
   }
 
   /** Convenience: is one entitlement active right now? */
@@ -253,12 +294,39 @@ export class RevnixClient {
   }
 
   /** Resolve a named in-app location to the currently published offering —
-   *  the one-line paywall call. */
+   *  the one-line paywall call. REV-157: reads the network first and caches
+   *  the result; if that read FAILS (offline / incident) it falls back to the
+   *  last cached resolution with `stale: true`, so the paywall renders the
+   *  last published version rather than not at all. Throws only when there
+   *  is nothing cached. */
   async resolvePlacement(placementKey: string): Promise<PlacementResolution> {
-    return await this.request<PlacementResolution>(
-      "GET",
-      `/v1/placements/${encodeURIComponent(placementKey)}/offering`
-    );
+    try {
+      const fresh = await this.request<PlacementResolution>(
+        "GET",
+        `/v1/placements/${encodeURIComponent(placementKey)}/offering`
+      );
+      await this.writePlacementCache(placementKey, fresh);
+      return { ...fresh, stale: false, fetchedAt: Date.now() };
+    } catch (err) {
+      const cached = await this.readPlacementCache(placementKey);
+      if (cached) {
+        return { ...cached.data, stale: true, fetchedAt: cached.fetchedAt };
+      }
+      throw err;
+    }
+  }
+
+  /** REV-157: the last resolution cached for `placementKey`, with NO network
+   *  call — for an instant, offline-safe paywall at launch. Always
+   *  `stale: true`; follow with resolvePlacement() to revalidate. Null if
+   *  nothing is cached yet. */
+  async getCachedPlacement(
+    placementKey: string
+  ): Promise<PlacementResolution | null> {
+    const cached = await this.readPlacementCache(placementKey);
+    return cached
+      ? { ...cached.data, stale: true, fetchedAt: cached.fetchedAt }
+      : null;
   }
 
   /** Report that a paywall was displayed (REV-094). Fire-and-forget like
@@ -351,6 +419,46 @@ export class RevnixClient {
       return { data: parsed.data, fetchedAt: parsed.fetchedAt };
     } catch {
       return null;
+    }
+  }
+
+  // ——— REV-157: placement cache (best-effort; storage failures never throw) ———
+  // One JSON map keyed by placementKey. Placements are app-scoped, not
+  // customer-scoped, so unlike the entitlements cache there is no per-customer
+  // ownership check — a logout/identify does not invalidate a paywall.
+
+  private async readPlacementMap(): Promise<
+    Record<string, { data: PlacementResolution; fetchedAt: number }>
+  > {
+    try {
+      const raw = await this.storage.getItem(PLACEMENTS_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, { data: PlacementResolution; fetchedAt: number }>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private async readPlacementCache(
+    placementKey: string
+  ): Promise<{ data: PlacementResolution; fetchedAt: number } | null> {
+    const map = await this.readPlacementMap();
+    return map[placementKey] ?? null;
+  }
+
+  private async writePlacementCache(
+    placementKey: string,
+    data: PlacementResolution
+  ): Promise<void> {
+    try {
+      const map = await this.readPlacementMap();
+      map[placementKey] = { data, fetchedAt: Date.now() };
+      await this.storage.setItem(PLACEMENTS_CACHE_KEY, JSON.stringify(map));
+    } catch {
+      // Caching is best-effort — a failure to persist must never break a read.
     }
   }
 

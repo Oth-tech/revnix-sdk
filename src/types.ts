@@ -35,6 +35,10 @@ export interface RevnixConfig {
    *  A slow or dead backend then fails fast with RevnixTimeoutError instead of
    *  hanging the app until the OS TCP timeout (60–120s+). */
   requestTimeoutMs?: number;
+  /** REV-157: placement keys to resolve-and-cache at construction (fire and
+   *  forget, never blocks startup), so the session's first paywall can render
+   *  from cache even when the device is offline by the time it is shown. */
+  prefetchPlacements?: string[];
 }
 
 export interface RevnixStorage {
@@ -198,4 +202,11 @@ export interface PlacementResolution {
   offering: PlacementOffering | null;
   paywall: PlacementPaywall | null;
   experiment: null;
+  /** REV-157 (SDK-populated): true when this was served from the local cache
+   *  because the live read failed (offline / incident) — the paywall renders
+   *  the last published resolution rather than not at all. false on a fresh
+   *  server read. */
+  stale?: boolean;
+  /** REV-157 (SDK-populated): unix ms this resolution was fetched/cached. */
+  fetchedAt?: number;
 }
