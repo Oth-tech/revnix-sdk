@@ -60,6 +60,18 @@ export interface RegisterPurchaseInput {
   expiresAt?: number;
   /** Raw store payload to retain in the ledger for reprocessing. */
   rawPayload?: unknown;
+  /** iOS only — the JWS StoreKit 2 hands you on every transaction
+   *  (`VerificationResult.jwsRepresentation`). Send it and the purchase is
+   *  proven: Revnix verifies it against Apple's certificate chain, checks it
+   *  names this exact transaction, and records a full purchase.
+   *
+   *  Without it the purchase is accepted but PROVISIONAL — a publishable key
+   *  ships inside your app binary, so an unproven claim is only an assertion.
+   *  A provisional purchase still grants the entitlement, for a short window,
+   *  and is promoted automatically when Apple's or Google's own notification
+   *  confirms the charge. Always send it if you can; apps that enable
+   *  "require store-verified purchases" reject claims that lack it. */
+  signedTransactionInfo?: string;
 }
 
 export interface RegisterPurchaseResult {
@@ -72,6 +84,10 @@ export interface RegisterPurchaseResult {
    *  resolution or a transfer behavior reassigned the store token. */
   customerId: string;
   transferred: boolean;
+  /** True when the purchase was recorded without store proof: the entitlement
+   *  is live but time-boxed until the store confirms the charge. Send
+   *  `signedTransactionInfo` (iOS) to avoid it. */
+  provisional?: boolean;
 }
 
 // ——— GET /v1/customers/{id}/entitlements ———
