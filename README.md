@@ -62,6 +62,7 @@ have full access.
 | `readYourWritesDelaysMs` | `[250, 500, 1000, 2000]` | Post-purchase entitlement re-fetch schedule; `[]` disables |
 | `reportInstalls` | `true` | `POST /v1/installs` on first launch (forced off on non-persistent storage) |
 | `installMetadata` | — | `{ platform?, appVersion? }` attached to the install report |
+| `prefetchPlacements` | — | Placement keys resolved-and-cached at construction (fire-and-forget), so the session's first paywall renders even offline |
 | `fetch` | global fetch | Custom fetch (tests, polyfills) |
 
 **Storage:** pass a persistent `storage` adapter (MMKV/AsyncStorage on React
@@ -158,10 +159,24 @@ its original `fetchedAt` — it only throws when there is nothing cached.
 offline. `getCachedEntitlements()` reads the cache without touching the
 network (returns `null` when empty) — useful for instant startup gating.
 
+**Local expiry grace:** cache-served entitlements are re-evaluated against the
+device clock — an entitlement whose `expiresAt` passed more than **3 days**
+ago is served as `isActive: false`, so a long-lapsed subscription never stays
+active offline forever. Within those 3 days it stays active (the auto-renewal
+an offline device cannot see yet). Fresh server reads are authoritative and
+never re-evaluated.
+
 `resolvePlacement(placementKey)` resolves the latest *published* catalog
 revision. Both `offering` and `paywall` are nullable — guard before rendering
 (a placement can exist with nothing attached, and an unpublished environment
 is an error).
+
+**Placements are offline-safe too:** each successful `resolvePlacement` caches
+its resolution (per placement key); when the live read fails the cached copy
+is returned with `stale: true`, so the paywall renders the last published
+version rather than not at all — it only throws when nothing is cached.
+`getCachedPlacement(placementKey)` reads that cache with no network call, and
+`prefetchPlacements` (config) warms it at app start.
 
 ## Errors
 
