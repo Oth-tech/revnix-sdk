@@ -143,16 +143,40 @@ If the purchase token already belongs to another customer and the app allows
 transfers, the result carries `transferred: true` and the SDK follows the
 transfer — `customerId` in the result becomes the local customer id.
 
+**Store proof — send `signedTransactionInfo`.** A publishable key ships inside
+your app binary, so "this device bought pro.monthly" is an assertion until a
+store backs it. Pass StoreKit 2's
+`VerificationResult.jwsRepresentation` as `signedTransactionInfo` and the
+purchase is proven: Revnix verifies it against Apple's certificate chain and
+checks that it names this exact transaction.
+
+```ts
+await Revnix.client.registerPurchase({
+  source: "apple",
+  token: transaction.originalID,
+  transactionId: transaction.id,
+  productId: transaction.productID,
+  expiresAt: transaction.expirationDate,
+  signedTransactionInfo: verificationResult.jwsRepresentation, // ← proof
+});
+```
+
+Without proof the purchase is still accepted, but the result carries
+`provisional: true`: the entitlement is granted for a short window rather than
+the full period, and no revenue is recorded, until Apple's or Google's own
+notification for the charge confirms it — which normally happens within
+seconds and promotes the purchase automatically. On Google there is no
+client-side receipt; if you have connected Play credentials, Revnix verifies
+the purchase token directly with Play instead, and a token Play rejects is
+refused with `403`. Once your installed base sends proof, an app can require
+it outright (`projects.setRequirePurchaseProof`), after which unproven
+registrations get `403` rather than a provisional grant.
+
 **Transfer trust (server-side):** the backend only honors a transfer (or an
 imported-history merge) for a claim it can verify — a secret `rvx_sk_…` key,
-or an Apple `signedTransactionInfo` JWS naming the claimed transaction. A
-publishable-key registration without proof still binds a *free* token, but a
-token bound to another customer stays put and the response carries
-`refused: "unverified-claim"`. The SDK does not yet attach
-`signedTransactionInfo` automatically; until it does, resale/restore
-transfers from publishable-key clients should be re-registered from your
-server with a secret key, or by calling `POST /v1/purchases` directly with
-the transaction's `signedTransactionInfo` in the body.
+or that same `signedTransactionInfo`. A publishable-key registration without
+proof still binds a *free* token, but a token bound to another customer stays
+put and the response carries `refused: "unverified-claim"`.
 
 ## Entitlements & placements
 
