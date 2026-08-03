@@ -143,6 +143,17 @@ If the purchase token already belongs to another customer and the app allows
 transfers, the result carries `transferred: true` and the SDK follows the
 transfer — `customerId` in the result becomes the local customer id.
 
+**Transfer trust (server-side):** the backend only honors a transfer (or an
+imported-history merge) for a claim it can verify — a secret `rvx_sk_…` key,
+or an Apple `signedTransactionInfo` JWS naming the claimed transaction. A
+publishable-key registration without proof still binds a *free* token, but a
+token bound to another customer stays put and the response carries
+`refused: "unverified-claim"`. The SDK does not yet attach
+`signedTransactionInfo` automatically; until it does, resale/restore
+transfers from publishable-key clients should be re-registered from your
+server with a secret key, or by calling `POST /v1/purchases` directly with
+the transaction's `signedTransactionInfo` in the body.
+
 ## Entitlements & placements
 
 ```ts
