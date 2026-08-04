@@ -134,7 +134,11 @@ describe("customer id lifecycle", () => {
 });
 
 describe("registerPurchase", () => {
-  test("posts the purchase as the current customer and follows a transfer", async () => {
+  test("posts the purchase as the current customer and follows its canonical id", async () => {
+    // REV-162: `customerId` is the id THIS caller should use — it differs
+    // from the one sent only when identity resolution merged that id away.
+    // It is no longer "whoever owns the token", which is what made following
+    // it dangerous: a refused claim used to return the rightful owner here.
     const fetchImpl = mockFetch({
       status: 201,
       body: {
@@ -168,8 +172,42 @@ describe("registerPurchase", () => {
       token: "otx-1",
       transactionId: "tx-1",
     });
-    // The backend resolved ownership to owner_1 — the SDK follows.
+    // user_9 was merged into owner_1 — the SDK follows its own canonical id.
     expect(await client.getCustomerId()).toBe("owner_1");
+
+    // A refused claim keeps the caller where it was. The server now returns
+    // the caller's own id with `tokenOwner` naming the holder separately, so
+    // there is nothing here for the SDK to adopt — this is the case that used
+    // to move the device onto the other customer and unlock their
+    // subscription on the next entitlements read.
+    const refusedFetch = mockFetch({
+      status: 201,
+      body: {
+        eventId: "evt2",
+        seq: 8,
+        duplicate: false,
+        customerId: "user_9",
+        ownedByOtherCustomer: true,
+        tokenOwner: "victim_1",
+        transferred: false,
+        refused: "unverified-claim",
+      },
+    });
+    const denied = new RevnixClient({
+      ...CONFIG,
+      fetch: refusedFetch,
+      customerId: "user_9",
+    });
+    const refusedResult = await denied.registerPurchase({
+      source: "apple",
+      token: "otx-victim",
+      productId: "pro.monthly",
+      transactionId: "tx-2",
+    });
+    expect(refusedResult.refused).toBe("unverified-claim");
+    expect(await denied.getCustomerId()).toBe("user_9");
+    // And no read-your-writes poll ran against a stream that is not ours.
+    expect(refusedFetch.mock.calls).toHaveLength(1);
   });
 
   test("409 surfaces as PurchaseBlockedError, other failures as RevnixError", async () => {

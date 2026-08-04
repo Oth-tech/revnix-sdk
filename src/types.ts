@@ -80,10 +80,28 @@ export interface RegisterPurchaseResult {
   seq: number;
   /** True when the store webhook already recorded this purchase. */
   duplicate: boolean;
-  /** Canonical owner — may differ from the current customer when identity
-   *  resolution or a transfer behavior reassigned the store token. */
+  /** The id THIS caller should use going forward — its own canonical id.
+   *  Differs from the id you sent only when identity resolution merged it
+   *  away, so following it is always safe. */
   customerId: string;
+  /** True when the store token belongs to a different customer than the
+   *  caller: the purchase was recorded against them, not you. Safe for every
+   *  caller — it reports the outcome without naming anyone. */
+  ownedByOtherCustomer?: boolean;
+  /** Which customer holds the token, when it is not you. Present only for
+   *  secret-key callers — a publishable key learns the outcome above but
+   *  never another customer's id. */
+  tokenOwner?: string;
+  /** True when the token was reassigned TO this caller. */
   transferred: boolean;
+  /** Set when an identity side-effect (a transfer, or absorbing an imported
+   *  history) was refused because the claim carried no proof. Send
+   *  `signedTransactionInfo`, or register from your server with a secret
+   *  key. */
+  refused?: "unverified-claim";
+  /** True when this transaction was already in the ledger — a StoreKit
+   *  replay or restore, not a new sale. */
+  restored?: boolean;
   /** True when the purchase was recorded without store proof: the entitlement
    *  is live but time-boxed until the store confirms the charge. Send
    *  `signedTransactionInfo` (iOS) to avoid it. */

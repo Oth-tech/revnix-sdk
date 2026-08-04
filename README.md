@@ -139,9 +139,16 @@ matters. Tune or disable via `readYourWritesDelaysMs` (pass `[]` to disable).
 For out-of-band grants (e.g. your server granted an entitlement and returned
 its `seq`), `waitForEntitlements(seq)` runs the same poll on demand.
 
-If the purchase token already belongs to another customer and the app allows
-transfers, the result carries `transferred: true` and the SDK follows the
-transfer — `customerId` in the result becomes the local customer id.
+`customerId` in the result is **the id this caller should use going forward** —
+its own canonical id. It differs from the one you sent only when identity
+resolution merged that id away (a restore after login), so the SDK follows it
+and persists it.
+
+When the token belongs to someone else, that is reported separately and the
+SDK stays where it is: `ownedByOtherCustomer: true`, plus `tokenOwner` naming
+the holder for secret-key callers only — a publishable key learns the outcome
+but never another customer's id. `transferred: true` means the token was
+reassigned *to you*.
 
 **Store proof — send `signedTransactionInfo`.** A publishable key ships inside
 your app binary, so "this device bought pro.monthly" is an assertion until a
@@ -176,7 +183,9 @@ registrations get `403` rather than a provisional grant.
 imported-history merge) for a claim it can verify — a secret `rvx_sk_…` key,
 or that same `signedTransactionInfo`. A publishable-key registration without
 proof still binds a *free* token, but a token bound to another customer stays
-put and the response carries `refused: "unverified-claim"`.
+put and the response carries `refused: "unverified-claim"` — with your own
+customer id untouched, so a refused claim never moves the device onto the
+rightful owner's identity.
 
 ## Entitlements & placements
 

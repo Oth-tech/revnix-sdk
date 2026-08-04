@@ -145,8 +145,17 @@ export class RevnixClient {
     const customerId = await this.customerIdPromise;
     try {
       const result = await this.postPurchase(customerId, input);
-      // A transfer behavior may have resolved the purchase to a different
-      // canonical customer (e.g. restore after login) — follow it.
+      // Identity resolution may have merged this device's id away (restore
+      // after login), so the server's id is the one to keep using.
+      //
+      // REV-162: this used to adopt whatever came back, and what came back on
+      // a REFUSED claim was the rightful owner's id — so a denied purchase
+      // quietly moved this device onto that customer, and the next
+      // entitlements read unlocked their subscription. The server now answers
+      // the two questions separately: `customerId` is always this caller's own
+      // canonical id, and `tokenOwner` (secret-key callers only) says the
+      // token belongs to someone else. Following `customerId` is therefore
+      // safe in every outcome.
       if (result.customerId !== customerId) {
         await this.setCustomerId(result.customerId);
       }
@@ -155,7 +164,11 @@ export class RevnixClient {
       // moment it matters. Best-effort: a failure here never fails the
       // purchase (it already registered). Disabled entirely by
       // readYourWritesDelaysMs: [].
-      if (this.readYourWritesDelaysMs.length > 0) {
+      // REV-162: skip the poll when the purchase was recorded against someone
+      // else — `seq` is then a position in THEIR stream, which this customer's
+      // cursor can never reach, so every delay would be waited out in full
+      // before giving up.
+      if (this.readYourWritesDelaysMs.length > 0 && !result.ownedByOtherCustomer) {
         await this.waitForEntitlements(result.seq).catch(() => {});
       }
       return result;
