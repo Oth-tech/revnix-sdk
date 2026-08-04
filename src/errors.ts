@@ -45,8 +45,10 @@ export class RevnixNetworkError extends RevnixError {
 }
 
 /** L4: the API returned 401/403 — the key is missing, revoked, or the wrong
- *  kind (e.g. a secret key where a public key is required). Retrying is
- *  pointless; the fix is reconfiguration, so surface this to the developer. */
+ *  kind (e.g. a secret key where a public key is required) — or the SDK
+ *  refused locally before the network for the same reason (identify()/alias()
+ *  on a publishable key). Retrying is pointless; the fix is reconfiguration,
+ *  so surface this to the developer. */
 export class RevnixAuthError extends RevnixError {
   constructor(status: number, message: string) {
     super(status, message);
