@@ -87,8 +87,10 @@ await Revnix.client.logout();           // fresh anonymous customer
 - `identify(userId, { strategy })` — `"merge"` (default) folds the anonymous
   history into the identified customer; `"block"` refuses when both ids
   already have history. No-op (no network call) when already identified as
-  that id. **Requires a secret or legacy key** — on a publishable key call it
-  from your backend instead.
+  that id. **Requires a secret or legacy key** — on a publishable key the SDK
+  throws `RevnixAuthError` locally, before any network call; run it from your
+  backend instead and let the device pick up the canonical id on its next
+  `registerPurchase()`/`getIdentity()`.
 - `alias(aliasId)` — attach an alternate id to the current customer (the
   alias must be a fresh id; use `identify()` to merge existing customers).
   Also secret-gated.

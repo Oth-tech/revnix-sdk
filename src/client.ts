@@ -89,14 +89,38 @@ export class RevnixClient {
     return this.customerIdPromise;
   }
 
-  /** Call on login: merges the current (usually anonymous) customer into
-   *  `userId`. The canonical id from the response becomes the id all
-   *  subsequent calls use. Safe to call repeatedly — a no-op when already
-   *  identified as `userId`. */
+  // C3: identity mutations are server-only — from a device, ANY caller could
+  // merge itself into any customer. The server 403s a publishable key; refuse
+  // before the network so the failure is deterministic in development (not
+  // first discovered on a real login) and the message says what to do.
+  private requireSecretKey(method: string): void {
+    if (this.apiKey.startsWith("rvx_pk_")) {
+      throw new RevnixAuthError(
+        403,
+        `Revnix: ${method}() requires a secret key (rvx_sk_…) and must be ` +
+          `called from your backend. A publishable key ships inside the app ` +
+          `binary, so it may not merge or alias identities — send the ids to ` +
+          `your server and call ${method}() there. Never embed a secret key ` +
+          `in the app.`
+      );
+    }
+  }
+
+  /** Merges the current (usually anonymous) customer into `userId`. The
+   *  canonical id from the response becomes the id all subsequent calls use.
+   *  Safe to call repeatedly — a no-op when already identified as `userId`.
+   *
+   *  Secret-key only — call this from YOUR BACKEND on login, not from the
+   *  device. On a publishable key it throws RevnixAuthError locally, before
+   *  any network call: identity merges from a device would let any caller
+   *  claim any customer. Device flow: send `getCustomerId()` and your user id
+   *  to your server, identify there with an rvx_sk_ key, and the device picks
+   *  up the canonical id on its next registerPurchase()/getIdentity(). */
   async identify(
     userId: string,
     options?: { strategy?: IdentifyStrategy }
   ): Promise<IdentifyResult> {
+    this.requireSecretKey("identify");
     const previousId = await this.customerIdPromise;
     if (previousId === userId) {
       return { canonicalId: userId, merged: false };
@@ -115,8 +139,12 @@ export class RevnixClient {
   }
 
   /** Attach an additional external id (legacy id, email hash, …) to the
-   *  current customer without switching to it. */
+   *  current customer without switching to it.
+   *
+   *  Secret-key only, like identify() — throws RevnixAuthError locally on a
+   *  publishable key; call it from your backend instead. */
   async alias(aliasId: string): Promise<AliasResult> {
+    this.requireSecretKey("alias");
     const customerId = await this.customerIdPromise;
     return await this.request<AliasResult>(
       "POST",
