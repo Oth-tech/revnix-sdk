@@ -14,10 +14,27 @@ export interface IapPurchase {
   transactionId?: string | null;
   /** Unix ms. */
   transactionDate?: number | null;
-  /** Android purchase token (also set on iOS by some react-native-iap
-   *  versions, where it is a JWS — NOT the token Revnix needs). */
+  /** Android purchase token. react-native-iap v13+ also sets it on iOS,
+   *  where it is the StoreKit 2 JWS — not the token Revnix needs, but the
+   *  proof it wants (`signedTransactionInfo`), so the Apple branch picks it
+   *  up from here when it has the JWS shape. */
   purchaseToken?: string | null;
+  /** StoreKit 2 JWS (`VerificationResult.jwsRepresentation`), for IAP
+   *  libraries that expose it under its own name. */
+  jwsRepresentation?: string | null;
   originalTransactionIdentifierIOS?: string | null;
+}
+
+// A JWS is three dot-separated base64url segments. Older react-native-iap
+// versions put other receipt shapes in purchaseToken on iOS — shape-check so
+// only a real JWS is sent as proof (the server rejects a malformed one).
+const JWS_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+function jwsFromIap(purchase: IapPurchase): string | undefined {
+  for (const candidate of [purchase.jwsRepresentation, purchase.purchaseToken]) {
+    if (candidate && JWS_SHAPE.test(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 export function purchaseInputFromIap(
@@ -40,6 +57,9 @@ export function purchaseInputFromIap(
       occurredAt: purchase.transactionDate ?? undefined,
       expiresAt: extras?.expiresAt,
       rawPayload: extras?.rawPayload,
+      // Without this the purchase lands PROVISIONAL (see
+      // RegisterPurchaseInput.signedTransactionInfo).
+      signedTransactionInfo: jwsFromIap(purchase),
     };
   }
   const token = purchase.purchaseToken;
