@@ -42,6 +42,17 @@ interface PendingPurchase {
   input: RegisterPurchaseInput;
 }
 
+// One queue entry per store charge — repeated failures collapse onto it, and
+// the retry pass removes by this key rather than by array position.
+const pendingKey = (p: RegisterPurchaseInput) =>
+  `${p.source}:${p.token}:${p.transactionId}`;
+
+// Queue only failures that can succeed later. Permanent 4xx (bad input,
+// revoked key, blocked transfer) would be retried every launch forever;
+// unknown non-Revnix errors count as transient to err on the keeping side.
+const worthQueueing = (err: unknown): boolean =>
+  !(err instanceof RevnixError) || err.isRetryable;
+
 export class RevnixClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -201,13 +212,15 @@ export class RevnixClient {
       }
       return result;
     } catch (err) {
-      // A blocked purchase (409) is a permanent domain rejection — don't queue.
-      if (err instanceof PurchaseBlockedError) throw err;
-      // C7: network/timeout/5xx — persist the receipt so the purchase isn't
-      // lost, then retry on the next launch / connectivity regain. Idempotent
-      // server-side (store.ts purchaseKey), so a later retry or the store
-      // webhook never double-counts. Rethrow so the caller can still react now.
-      await this.enqueuePurchase(customerId, input);
+      // C7: network/timeout/429/5xx — persist the receipt so the purchase
+      // isn't lost, then retry on the next launch / connectivity regain.
+      // Idempotent server-side (store.ts purchaseKey), so a later retry or the
+      // store webhook never double-counts. Permanent rejections (blocked
+      // transfer, bad input, revoked key) are NOT queued — they won't fix
+      // themselves. Rethrow either way so the caller can still react now.
+      if (worthQueueing(err)) {
+        await this.enqueuePurchase(customerId, input);
+      }
       throw err;
     }
   }
@@ -227,18 +240,23 @@ export class RevnixClient {
    *  Idempotent and safe to call repeatedly. */
   async retryPendingPurchases(): Promise<void> {
     const queue = await this.readPurchaseQueue();
-    if (queue.length === 0) return;
-    const remaining: PendingPurchase[] = [];
     for (const item of queue) {
       try {
         await this.postPurchase(item.customerId, item.input);
-        // Delivered — drop it from the queue.
+        // Delivered — remove it.
       } catch (err) {
-        if (err instanceof PurchaseBlockedError) continue; // permanent — drop
-        remaining.push(item); // still failing — keep for next time
+        if (worthQueueing(err)) continue; // transient — keep for next time
+        // Permanent rejection — remove it.
       }
+      // Remove THIS item from the queue as it stands now, not from the
+      // snapshot iterated above: each postPurchase can spend seconds in a
+      // timeout, and a purchase failing during that window (likely — both
+      // happen exactly when the network is bad) enqueues concurrently. A
+      // snapshot write-back at the end would silently drop it.
+      await this.mutateQueue((current) =>
+        current.filter((q) => pendingKey(q.input) !== pendingKey(item.input))
+      );
     }
-    await this.writePurchaseQueue(remaining);
   }
 
   /** Current entitlements for this customer, merged across every id linked to
@@ -505,6 +523,25 @@ export class RevnixClient {
 
   // ——— C7: persisted purchase retry queue ———
 
+  // Serializes every queue read-modify-write. Storage adapters may be async,
+  // so two interleaved mutations (an enqueue during the retry pass, retry
+  // passes from constructor + a manual call) would otherwise clobber each
+  // other's writes and lose purchases.
+  private queueLock: Promise<void> = Promise.resolve();
+
+  private mutateQueue(
+    mutate: (queue: PendingPurchase[]) => PendingPurchase[]
+  ): Promise<void> {
+    const run = this.queueLock.then(async () => {
+      const queue = await this.readPurchaseQueue();
+      const next = mutate(queue);
+      if (next !== queue) await this.writePurchaseQueue(next);
+    });
+    // The chain must survive a failed mutation or every later one deadlocks.
+    this.queueLock = run.catch(() => {});
+    return run;
+  }
+
   private async readPurchaseQueue(): Promise<PendingPurchase[]> {
     try {
       const raw = await this.storage.getItem(PENDING_PURCHASES_KEY);
@@ -524,18 +561,16 @@ export class RevnixClient {
     }
   }
 
-  private async enqueuePurchase(
+  private enqueuePurchase(
     customerId: string,
     input: RegisterPurchaseInput
   ): Promise<void> {
-    const queue = await this.readPurchaseQueue();
-    const key = (p: RegisterPurchaseInput) =>
-      `${p.source}:${p.token}:${p.transactionId}`;
     // Repeated failures of the same purchase collapse to one queued entry.
-    if (!queue.some((q) => key(q.input) === key(input))) {
-      queue.push({ customerId, input });
-      await this.writePurchaseQueue(queue);
-    }
+    return this.mutateQueue((queue) =>
+      queue.some((q) => pendingKey(q.input) === pendingKey(input))
+        ? queue
+        : [...queue, { customerId, input }]
+    );
   }
 
   private async request<T>(
