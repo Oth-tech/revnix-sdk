@@ -66,6 +66,16 @@ const pendingKey = (p: RegisterPurchaseInput) =>
 const worthQueueing = (err: unknown): boolean =>
   !(err instanceof RevnixError) || err.isRetryable;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// REV-199 (CTO-R2 M24): ±20% on every scheduled delay.
+const jittered = (ms: number) => ms * (0.8 + Math.random() * 0.4);
+
+// REV-199 (M21): how long a fresh entitlements read answers repeat calls
+// from memory. Short enough that a webhook-driven change is picked up within
+// half a minute; long enough that gating five screens costs one request.
+const DEFAULT_ENTITLEMENTS_TTL_MS = 30_000;
+
 export class RevnixClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -79,6 +89,7 @@ export class RevnixClient {
   private readonly requestTimeoutMs: number;
   private readonly readYourWritesDelaysMs: number[];
   private readonly offlineMaxCacheAgeMs: number;
+  private readonly entitlementsTtlMs: number;
   private customerIdPromise: Promise<string>;
 
   constructor(config: RevnixConfig) {
@@ -96,6 +107,8 @@ export class RevnixClient {
     this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.offlineMaxCacheAgeMs =
       config.offlineMaxCacheAgeMs ?? DEFAULT_OFFLINE_MAX_CACHE_AGE_MS;
+    this.entitlementsTtlMs =
+      config.entitlementsTtlMs ?? DEFAULT_ENTITLEMENTS_TTL_MS;
     this.readYourWritesDelaysMs =
       config.readYourWritesDelaysMs ?? [250, 500, 1000, 2000];
     this.customerIdPromise = this.loadCustomerId(config.customerId);
@@ -275,20 +288,72 @@ export class RevnixClient {
     }
   }
 
+  // REV-199 (CTO-R2 M21): the last fresh network read, held in memory so
+  // reads within the soft TTL answer without a round trip — apps gate many
+  // screens on isEntitled(), and every one of those was a full request for an
+  // answer that had not changed. Stale cache-fallback results are never held
+  // here: only a real server read satisfies the TTL.
+  private freshEntitlements: {
+    customerId: string;
+    data: CustomerEntitlements;
+    at: number;
+  } | null = null;
+  // REV-199 (M21): concurrent getEntitlements() calls share one request.
+  private inflightEntitlements: {
+    customerId: string;
+    promise: Promise<CustomerEntitlements>;
+  } | null = null;
+
   /** Current entitlements for this customer, merged across every id linked to
-   *  them. Reads the network first and caches the result; if that read FAILS
-   *  (offline / incident) it falls back to the last cached entitlements with
-   *  `stale: true`, so a paying customer is never shown as unsubscribed just
-   *  because the network is down. Throws only when there is nothing cached. */
+   *  them. Served from memory when a fresh network read is younger than
+   *  `entitlementsTtlMs` (REV-199 — pass 0 to disable); otherwise reads the
+   *  network (concurrent callers share one request) and caches the result; if
+   *  that read FAILS transiently (offline / incident) it falls back to the
+   *  last cached entitlements with `stale: true`, so a paying customer is
+   *  never shown as unsubscribed just because the network is down. Throws on
+   *  a deliberate server rejection (revoked key, …) or when there is nothing
+   *  cached. */
   async getEntitlements(): Promise<CustomerEntitlements> {
     const customerId = await this.customerIdPromise;
+    const held = this.freshEntitlements;
+    if (held && held.customerId === customerId) {
+      const age = Date.now() - held.at;
+      if (age >= 0 && age < this.entitlementsTtlMs) return held.data;
+    }
+    if (this.inflightEntitlements?.customerId === customerId) {
+      return this.inflightEntitlements.promise;
+    }
+    const promise = this.fetchEntitlementsWithFallback(customerId);
+    this.inflightEntitlements = { customerId, promise };
+    const clear = () => {
+      if (this.inflightEntitlements?.promise === promise) {
+        this.inflightEntitlements = null;
+      }
+    };
+    promise.then(clear, clear);
+    return promise;
+  }
+
+  /** The authoritative network read: no TTL, no cache fallback — throws so
+   *  the caller sees the real failure (waitForEntitlements needs 429s). */
+  private async fetchFreshEntitlements(
+    customerId: string
+  ): Promise<CustomerEntitlements> {
+    const fresh = await this.request<CustomerEntitlements>(
+      "GET",
+      `/v1/customers/${encodeURIComponent(customerId)}/entitlements`
+    );
+    await this.writeEntitlementsCache(customerId, fresh);
+    const result = { ...fresh, stale: false, fetchedAt: Date.now() };
+    this.freshEntitlements = { customerId, data: result, at: Date.now() };
+    return result;
+  }
+
+  private async fetchEntitlementsWithFallback(
+    customerId: string
+  ): Promise<CustomerEntitlements> {
     try {
-      const fresh = await this.request<CustomerEntitlements>(
-        "GET",
-        `/v1/customers/${encodeURIComponent(customerId)}/entitlements`
-      );
-      await this.writeEntitlementsCache(customerId, fresh);
-      return { ...fresh, stale: false, fetchedAt: Date.now() };
+      return await this.fetchFreshEntitlements(customerId);
     } catch (err) {
       // REV-198 (CTO-R2 M22): the cache exists to ride out failures that
       // might succeed next time — network, timeout, 429, 5xx. A deliberate
@@ -316,11 +381,26 @@ export class RevnixClient {
    *  automatically by registerPurchase; public for manual flows (e.g. after
    *  a webhook-driven grant the app learns about out-of-band). */
   async waitForEntitlements(seq: number): Promise<CustomerEntitlements> {
+    const customerId = await this.customerIdPromise;
     let last = await this.getEntitlements();
     for (const delayMs of this.readYourWritesDelaysMs) {
       if (!last.stale && last.cursor >= seq) return last;
-      await new Promise((r) => setTimeout(r, delayMs));
-      last = await this.getEntitlements();
+      // REV-199 (M24): ±20% jitter — promo pushes synchronize a fleet's
+      // purchases, and identical delay schedules kept every device's poll in
+      // lockstep against our own rate limiter.
+      await sleep(jittered(delayMs));
+      try {
+        // TTL-bypassing read: the whole point of this poll is a FRESH cursor,
+        // so the M21 soft-TTL must not answer from memory here.
+        last = await this.fetchFreshEntitlements(customerId);
+      } catch (err) {
+        // REV-199 (M24): the server said exactly how long to back off —
+        // honor it instead of fighting our own rate limiter.
+        if (err instanceof RevnixRateLimitError && err.retryAfterMs) {
+          await sleep(err.retryAfterMs);
+        }
+        // Transient failure: keep the last read and let the schedule run.
+      }
     }
     return last;
   }

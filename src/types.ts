@@ -44,6 +44,11 @@ export interface RevnixConfig {
    *  sits BEFORE the snapshot was written — a rollback), cached entitlements
    *  are served inactive. Default 14 days. */
   offlineMaxCacheAgeMs?: number;
+  /** REV-199 (M21): soft TTL on entitlement reads — a fresh network read
+   *  younger than this answers getEntitlements()/isEntitled() from memory,
+   *  so gating several screens costs one request, not one each. Pass 0 for
+   *  the old always-fetch behavior. Default 30000. */
+  entitlementsTtlMs?: number;
 }
 
 export interface RevnixStorage {
