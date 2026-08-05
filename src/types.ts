@@ -39,6 +39,11 @@ export interface RevnixConfig {
    *  forget, never blocks startup), so the session's first paywall can render
    *  from cache even when the device is offline by the time it is shown. */
   prefetchPlacements?: string[];
+  /** REV-198 (M23): how old a cached entitlements snapshot may be and still
+   *  grant access when served offline. Beyond this (or when the device clock
+   *  sits BEFORE the snapshot was written — a rollback), cached entitlements
+   *  are served inactive. Default 14 days. */
+  offlineMaxCacheAgeMs?: number;
 }
 
 export interface RevnixStorage {

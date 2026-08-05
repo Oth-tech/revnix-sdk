@@ -35,6 +35,19 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 // cache-served reads are re-evaluated; a fresh server read is authoritative.
 const LOCAL_EXPIRY_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
 
+// REV-198 (CTO-R2 M23): how old a cached snapshot may be and still grant
+// access. The expiry rule above bounds entitlements that CARRY an expiresAt —
+// but a lifetime grant has none, and rolling the clock back moves every
+// expiresAt into "the future", so blocking the domain plus a clock rollback
+// was indefinite premium. Bounding on the cache's own age (fetchedAt) closes
+// the unbounded variant: client checks are always defeatable, but now it
+// takes re-editing the JSON every two weeks, not one Settings change.
+const DEFAULT_OFFLINE_MAX_CACHE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+// now < fetchedAt means the clock is BEHIND the moment the cache was written
+// — a rolled-back clock. Small negative skew is real (NTP corrections), a
+// large one is not.
+const CLOCK_ROLLBACK_TOLERANCE_MS = 5 * 60 * 1000;
+
 // C7: a purchase that failed to register, persisted so it survives an app
 // restart and retries later (idempotent server-side via purchaseKey).
 interface PendingPurchase {
@@ -65,6 +78,7 @@ export class RevnixClient {
   };
   private readonly requestTimeoutMs: number;
   private readonly readYourWritesDelaysMs: number[];
+  private readonly offlineMaxCacheAgeMs: number;
   private customerIdPromise: Promise<string>;
 
   constructor(config: RevnixConfig) {
@@ -80,6 +94,8 @@ export class RevnixClient {
     this.reportInstalls = (config.reportInstalls ?? true) && resolved.persistent;
     this.installMetadata = config.installMetadata;
     this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.offlineMaxCacheAgeMs =
+      config.offlineMaxCacheAgeMs ?? DEFAULT_OFFLINE_MAX_CACHE_AGE_MS;
     this.readYourWritesDelaysMs =
       config.readYourWritesDelaysMs ?? [250, 500, 1000, 2000];
     this.customerIdPromise = this.loadCustomerId(config.customerId);
@@ -274,6 +290,13 @@ export class RevnixClient {
       await this.writeEntitlementsCache(customerId, fresh);
       return { ...fresh, stale: false, fetchedAt: Date.now() };
     } catch (err) {
+      // REV-198 (CTO-R2 M22): the cache exists to ride out failures that
+      // might succeed next time — network, timeout, 429, 5xx. A deliberate
+      // server answer (401/403 revoked key, 404, 409) is not an outage, and
+      // serving last-known-good over it deleted every kill switch: a revoked
+      // key kept unlocking cached entitlements fleet-wide. Non-retryable →
+      // the caller hears exactly what the server said.
+      if (err instanceof RevnixError && !err.isRetryable) throw err;
       const cached = await this.readEntitlementsCache(customerId);
       if (cached) {
         return this.withLocalExpiry({
@@ -324,7 +347,23 @@ export class RevnixClient {
    *  cannot see yet). Inactive stays inactive; no expiresAt (lifetime/grant)
    *  is untouched. */
   private withLocalExpiry(data: CustomerEntitlements): CustomerEntitlements {
-    const cutoff = Date.now() - LOCAL_EXPIRY_GRACE_MS;
+    const now = Date.now();
+    // REV-198 (M23): fetchedAt was stored but never consulted. A snapshot
+    // older than the offline window — or "younger than when it was written"
+    // (rolled-back clock) — no longer grants access at all.
+    const age = now - (data.fetchedAt ?? now);
+    if (
+      age > this.offlineMaxCacheAgeMs ||
+      age < -CLOCK_ROLLBACK_TOLERANCE_MS
+    ) {
+      return {
+        ...data,
+        entitlements: data.entitlements.map((e) =>
+          e.isActive ? { ...e, isActive: false } : e
+        ),
+      };
+    }
+    const cutoff = now - LOCAL_EXPIRY_GRACE_MS;
     return {
       ...data,
       entitlements: data.entitlements.map((e) =>
@@ -367,6 +406,11 @@ export class RevnixClient {
       await this.writePlacementCache(placementKey, fresh);
       return { ...fresh, stale: false, fetchedAt: Date.now() };
     } catch (err) {
+      // REV-198 (M22): same rule as getEntitlements — an unpublished catalog
+      // (409) or deleted placement (404) is the server's deliberate answer,
+      // and caching over it meant an unpublished paywall kept rendering
+      // fleet-wide with no way to pull it.
+      if (err instanceof RevnixError && !err.isRetryable) throw err;
       const cached = await this.readPlacementCache(placementKey);
       if (cached) {
         return { ...cached.data, stale: true, fetchedAt: cached.fetchedAt };
