@@ -10,6 +10,7 @@ import { generateAnonymousId, generateViewId, resolveStorage } from "./storage.j
 import { SDK_VERSION } from "./version.js";
 import type {
   AliasResult,
+  RevnixDiagnostic,
   CustomerEntitlements,
   IdentifyResult,
   IdentifyStrategy,
@@ -35,6 +36,19 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 // cache-served reads are re-evaluated; a fresh server read is authoritative.
 const LOCAL_EXPIRY_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
 
+// REV-198 (CTO-R2 M23): how old a cached snapshot may be and still grant
+// access. The expiry rule above bounds entitlements that CARRY an expiresAt —
+// but a lifetime grant has none, and rolling the clock back moves every
+// expiresAt into "the future", so blocking the domain plus a clock rollback
+// was indefinite premium. Bounding on the cache's own age (fetchedAt) closes
+// the unbounded variant: client checks are always defeatable, but now it
+// takes re-editing the JSON every two weeks, not one Settings change.
+const DEFAULT_OFFLINE_MAX_CACHE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+// now < fetchedAt means the clock is BEHIND the moment the cache was written
+// — a rolled-back clock. Small negative skew is real (NTP corrections), a
+// large one is not.
+const CLOCK_ROLLBACK_TOLERANCE_MS = 5 * 60 * 1000;
+
 // C7: a purchase that failed to register, persisted so it survives an app
 // restart and retries later (idempotent server-side via purchaseKey).
 interface PendingPurchase {
@@ -53,6 +67,16 @@ const pendingKey = (p: RegisterPurchaseInput) =>
 const worthQueueing = (err: unknown): boolean =>
   !(err instanceof RevnixError) || err.isRetryable;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// REV-199 (CTO-R2 M24): ±20% on every scheduled delay.
+const jittered = (ms: number) => ms * (0.8 + Math.random() * 0.4);
+
+// REV-199 (M21): how long a fresh entitlements read answers repeat calls
+// from memory. Short enough that a webhook-driven change is picked up within
+// half a minute; long enough that gating five screens costs one request.
+const DEFAULT_ENTITLEMENTS_TTL_MS = 30_000;
+
 export class RevnixClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -65,6 +89,16 @@ export class RevnixClient {
   };
   private readonly requestTimeoutMs: number;
   private readonly readYourWritesDelaysMs: number[];
+  private readonly offlineMaxCacheAgeMs: number;
+  private readonly entitlementsTtlMs: number;
+  // REV-200 (CTO-R2 M26): background failures used to vanish into
+  // catch(() => {}) — a fleet failing before the server produced silence.
+  // Every such site now reports here: the app's onDiagnostic callback gets
+  // the event, and a counter rides the next successful request as an
+  // X-Revnix-Bg-Failures header so the backend can see field pain it would
+  // otherwise never receive.
+  private readonly onDiagnostic?: (event: RevnixDiagnostic) => void;
+  private bgFailures = 0;
   private customerIdPromise: Promise<string>;
 
   constructor(config: RevnixConfig) {
@@ -80,17 +114,26 @@ export class RevnixClient {
     this.reportInstalls = (config.reportInstalls ?? true) && resolved.persistent;
     this.installMetadata = config.installMetadata;
     this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.offlineMaxCacheAgeMs =
+      config.offlineMaxCacheAgeMs ?? DEFAULT_OFFLINE_MAX_CACHE_AGE_MS;
+    this.entitlementsTtlMs =
+      config.entitlementsTtlMs ?? DEFAULT_ENTITLEMENTS_TTL_MS;
+    this.onDiagnostic = config.onDiagnostic;
     this.readYourWritesDelaysMs =
       config.readYourWritesDelaysMs ?? [250, 500, 1000, 2000];
     this.customerIdPromise = this.loadCustomerId(config.customerId);
     // C7: retry any purchases that failed to register on a previous launch, so
     // a paying user never stays locked out because a POST didn't land.
-    void this.retryPendingPurchases().catch(() => {});
+    void this.retryPendingPurchases().catch((err) =>
+      this.diag("retryPendingPurchases", err)
+    );
     // REV-157: warm the placement cache at launch, so the first paywall of the
     // session can render offline. Fire-and-forget; a failed key just stays on
     // whatever an earlier launch cached.
     for (const key of config.prefetchPlacements ?? []) {
-      void this.resolvePlacement(key).catch(() => {});
+      void this.resolvePlacement(key).catch((err) =>
+        this.diag("prefetchPlacement", err)
+      );
     }
   }
 
@@ -208,7 +251,9 @@ export class RevnixClient {
       // cursor can never reach, so every delay would be waited out in full
       // before giving up.
       if (this.readYourWritesDelaysMs.length > 0 && !result.ownedByOtherCustomer) {
-        await this.waitForEntitlements(result.seq).catch(() => {});
+        await this.waitForEntitlements(result.seq).catch((err) =>
+          this.diag("waitForEntitlements", err)
+        );
       }
       return result;
     } catch (err) {
@@ -245,8 +290,14 @@ export class RevnixClient {
         await this.postPurchase(item.customerId, item.input);
         // Delivered — remove it.
       } catch (err) {
-        if (worthQueueing(err)) continue; // transient — keep for next time
+        if (worthQueueing(err)) {
+          // REV-200 (M26): a queued purchase that STILL cannot land is the
+          // most important background failure there is — report it.
+          this.diag("retryPendingPurchases", err);
+          continue; // transient — keep for next time
+        }
         // Permanent rejection — remove it.
+        this.diag("retryPendingPurchases", err);
       }
       // Remove THIS item from the queue as it stands now, not from the
       // snapshot iterated above: each postPurchase can spend seconds in a
@@ -259,21 +310,80 @@ export class RevnixClient {
     }
   }
 
+  // REV-199 (CTO-R2 M21): the last fresh network read, held in memory so
+  // reads within the soft TTL answer without a round trip — apps gate many
+  // screens on isEntitled(), and every one of those was a full request for an
+  // answer that had not changed. Stale cache-fallback results are never held
+  // here: only a real server read satisfies the TTL.
+  private freshEntitlements: {
+    customerId: string;
+    data: CustomerEntitlements;
+    at: number;
+  } | null = null;
+  // REV-199 (M21): concurrent getEntitlements() calls share one request.
+  private inflightEntitlements: {
+    customerId: string;
+    promise: Promise<CustomerEntitlements>;
+  } | null = null;
+
   /** Current entitlements for this customer, merged across every id linked to
-   *  them. Reads the network first and caches the result; if that read FAILS
-   *  (offline / incident) it falls back to the last cached entitlements with
-   *  `stale: true`, so a paying customer is never shown as unsubscribed just
-   *  because the network is down. Throws only when there is nothing cached. */
+   *  them. Served from memory when a fresh network read is younger than
+   *  `entitlementsTtlMs` (REV-199 — pass 0 to disable); otherwise reads the
+   *  network (concurrent callers share one request) and caches the result; if
+   *  that read FAILS transiently (offline / incident) it falls back to the
+   *  last cached entitlements with `stale: true`, so a paying customer is
+   *  never shown as unsubscribed just because the network is down. Throws on
+   *  a deliberate server rejection (revoked key, …) or when there is nothing
+   *  cached. */
   async getEntitlements(): Promise<CustomerEntitlements> {
     const customerId = await this.customerIdPromise;
+    const held = this.freshEntitlements;
+    if (held && held.customerId === customerId) {
+      const age = Date.now() - held.at;
+      if (age >= 0 && age < this.entitlementsTtlMs) return held.data;
+    }
+    if (this.inflightEntitlements?.customerId === customerId) {
+      return this.inflightEntitlements.promise;
+    }
+    const promise = this.fetchEntitlementsWithFallback(customerId);
+    this.inflightEntitlements = { customerId, promise };
+    const clear = () => {
+      if (this.inflightEntitlements?.promise === promise) {
+        this.inflightEntitlements = null;
+      }
+    };
+    promise.then(clear, clear);
+    return promise;
+  }
+
+  /** The authoritative network read: no TTL, no cache fallback — throws so
+   *  the caller sees the real failure (waitForEntitlements needs 429s). */
+  private async fetchFreshEntitlements(
+    customerId: string
+  ): Promise<CustomerEntitlements> {
+    const fresh = await this.request<CustomerEntitlements>(
+      "GET",
+      `/v1/customers/${encodeURIComponent(customerId)}/entitlements`
+    );
+    await this.writeEntitlementsCache(customerId, fresh);
+    const result = { ...fresh, stale: false, fetchedAt: Date.now() };
+    this.freshEntitlements = { customerId, data: result, at: Date.now() };
+    return result;
+  }
+
+  private async fetchEntitlementsWithFallback(
+    customerId: string
+  ): Promise<CustomerEntitlements> {
     try {
-      const fresh = await this.request<CustomerEntitlements>(
-        "GET",
-        `/v1/customers/${encodeURIComponent(customerId)}/entitlements`
-      );
-      await this.writeEntitlementsCache(customerId, fresh);
-      return { ...fresh, stale: false, fetchedAt: Date.now() };
+      return await this.fetchFreshEntitlements(customerId);
     } catch (err) {
+      // REV-198 (CTO-R2 M22): the cache exists to ride out failures that
+      // might succeed next time — network, timeout, 429, 5xx. A deliberate
+      // server answer (401/403 revoked key, 404, 409) is not an outage, and
+      // serving last-known-good over it deleted every kill switch: a revoked
+      // key kept unlocking cached entitlements fleet-wide. Non-retryable →
+      // the caller hears exactly what the server said.
+      if (err instanceof RevnixError && !err.isRetryable) throw err;
       const cached = await this.readEntitlementsCache(customerId);
       if (cached) {
         return this.withLocalExpiry({
@@ -293,11 +403,26 @@ export class RevnixClient {
    *  automatically by registerPurchase; public for manual flows (e.g. after
    *  a webhook-driven grant the app learns about out-of-band). */
   async waitForEntitlements(seq: number): Promise<CustomerEntitlements> {
+    const customerId = await this.customerIdPromise;
     let last = await this.getEntitlements();
     for (const delayMs of this.readYourWritesDelaysMs) {
       if (!last.stale && last.cursor >= seq) return last;
-      await new Promise((r) => setTimeout(r, delayMs));
-      last = await this.getEntitlements();
+      // REV-199 (M24): ±20% jitter — promo pushes synchronize a fleet's
+      // purchases, and identical delay schedules kept every device's poll in
+      // lockstep against our own rate limiter.
+      await sleep(jittered(delayMs));
+      try {
+        // TTL-bypassing read: the whole point of this poll is a FRESH cursor,
+        // so the M21 soft-TTL must not answer from memory here.
+        last = await this.fetchFreshEntitlements(customerId);
+      } catch (err) {
+        // REV-199 (M24): the server said exactly how long to back off —
+        // honor it instead of fighting our own rate limiter.
+        if (err instanceof RevnixRateLimitError && err.retryAfterMs) {
+          await sleep(err.retryAfterMs);
+        }
+        // Transient failure: keep the last read and let the schedule run.
+      }
     }
     return last;
   }
@@ -324,7 +449,23 @@ export class RevnixClient {
    *  cannot see yet). Inactive stays inactive; no expiresAt (lifetime/grant)
    *  is untouched. */
   private withLocalExpiry(data: CustomerEntitlements): CustomerEntitlements {
-    const cutoff = Date.now() - LOCAL_EXPIRY_GRACE_MS;
+    const now = Date.now();
+    // REV-198 (M23): fetchedAt was stored but never consulted. A snapshot
+    // older than the offline window — or "younger than when it was written"
+    // (rolled-back clock) — no longer grants access at all.
+    const age = now - (data.fetchedAt ?? now);
+    if (
+      age > this.offlineMaxCacheAgeMs ||
+      age < -CLOCK_ROLLBACK_TOLERANCE_MS
+    ) {
+      return {
+        ...data,
+        entitlements: data.entitlements.map((e) =>
+          e.isActive ? { ...e, isActive: false } : e
+        ),
+      };
+    }
+    const cutoff = now - LOCAL_EXPIRY_GRACE_MS;
     return {
       ...data,
       entitlements: data.entitlements.map((e) =>
@@ -367,6 +508,11 @@ export class RevnixClient {
       await this.writePlacementCache(placementKey, fresh);
       return { ...fresh, stale: false, fetchedAt: Date.now() };
     } catch (err) {
+      // REV-198 (M22): same rule as getEntitlements — an unpublished catalog
+      // (409) or deleted placement (404) is the server's deliberate answer,
+      // and caching over it meant an unpublished paywall kept rendering
+      // fleet-wide with no way to pull it.
+      if (err instanceof RevnixError && !err.isRetryable) throw err;
       const cached = await this.readPlacementCache(placementKey);
       if (cached) {
         return { ...cached.data, stale: true, fetchedAt: cached.fetchedAt };
@@ -410,7 +556,17 @@ export class RevnixClient {
           ...(options?.paywallId ? { paywallId: options.paywallId } : {}),
         })
       )
-      .catch(() => {});
+      .catch((err) => this.diag("logPaywallShown", err));
+  }
+
+  // REV-200 (M26): record one background failure. Never throws.
+  private diag(op: string, error: unknown): void {
+    this.bgFailures += 1;
+    try {
+      this.onDiagnostic?.({ op, error, at: Date.now() });
+    } catch {
+      // The reporter itself must never take the SDK down.
+    }
   }
 
   private async loadCustomerId(initial?: string): Promise<string> {
@@ -437,7 +593,7 @@ export class RevnixClient {
       occurredAt: Date.now(),
       sdkVersion: SDK_VERSION,
       ...this.installMetadata,
-    }).catch(() => {});
+    }).catch((err) => this.diag("reportInstall", err));
   }
 
   private async setCustomerId(customerId: string): Promise<void> {
@@ -456,8 +612,11 @@ export class RevnixClient {
         ENTITLEMENTS_CACHE_KEY,
         JSON.stringify({ customerId, data, fetchedAt: Date.now() })
       );
-    } catch {
-      // Caching is best-effort — a failure to persist must never break a read.
+    } catch (err) {
+      // Caching is best-effort — a failure to persist must never break a
+      // read. REV-200 (M26): but a broken storage adapter is exactly the
+      // fleet-wide failure that used to produce pure silence — report it.
+      this.diag("storageWrite", err);
     }
   }
 
@@ -476,7 +635,8 @@ export class RevnixClient {
       // logout/identify the cached entitlements belong to a different customer.
       if (parsed.customerId !== customerId) return null;
       return { data: parsed.data, fetchedAt: parsed.fetchedAt };
-    } catch {
+    } catch (err) {
+      this.diag("storageRead", err);
       return null;
     }
   }
@@ -516,8 +676,9 @@ export class RevnixClient {
       const map = await this.readPlacementMap();
       map[placementKey] = { data, fetchedAt: Date.now() };
       await this.storage.setItem(PLACEMENTS_CACHE_KEY, JSON.stringify(map));
-    } catch {
-      // Caching is best-effort — a failure to persist must never break a read.
+    } catch (err) {
+      // Best-effort, but reported (REV-200 M26).
+      this.diag("storageWrite", err);
     }
   }
 
@@ -556,8 +717,10 @@ export class RevnixClient {
   private async writePurchaseQueue(queue: PendingPurchase[]): Promise<void> {
     try {
       await this.storage.setItem(PENDING_PURCHASES_KEY, JSON.stringify(queue));
-    } catch {
-      // best-effort
+    } catch (err) {
+      // Best-effort, but reported (REV-200 M26) — a queue that cannot
+      // persist is a purchase that will not survive a restart.
+      this.diag("storageWrite", err);
     }
   }
 
@@ -586,6 +749,11 @@ export class RevnixClient {
       ? setTimeout(() => controller.abort(), this.requestTimeoutMs)
       : undefined;
 
+    // REV-200 (M26): piggyback the background-failure counter on this
+    // request so field pain reaches the backend's request logs. Cleared only
+    // for the count actually sent, and only on a delivered response —
+    // failures that pile up mid-flight ride the next one.
+    const reportedBgFailures = this.bgFailures;
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -595,6 +763,9 @@ export class RevnixClient {
           // L3: identify the SDK on EVERY request (reads included) so the
           // backend can triage by version without depending on body fields.
           "X-Revnix-SDK": `revnix-react/${SDK_VERSION}`,
+          ...(reportedBgFailures > 0
+            ? { "X-Revnix-Bg-Failures": String(reportedBgFailures) }
+            : {}),
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -615,6 +786,9 @@ export class RevnixClient {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+
+    // The counter reached the server (any HTTP status is a delivery).
+    this.bgFailures = Math.max(0, this.bgFailures - reportedBgFailures);
 
     let parsed: unknown;
     try {

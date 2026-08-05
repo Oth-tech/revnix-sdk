@@ -322,6 +322,34 @@ describe("purchaseInputFromIap", () => {
       purchaseInputFromIap({ productId: "p", transactionId: "t" }, "google")
     ).toThrow(/purchaseToken/);
   });
+
+  // REV-200 (M25): when a JWS is present its payload names the true
+  // originalTransactionId — the token must come from there, or a renewal
+  // with a missing original id mints a purchaseKey the webhook never
+  // produces (double count) AND fails the server's proof match.
+  test("apple: the JWS payload's originalTransactionId wins the token", () => {
+    const payload = {
+      originalTransactionId: "1000000456",
+      transactionId: "2000000999",
+    };
+    const b64url = Buffer.from(JSON.stringify(payload))
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    const jws = `eyJhbGciOiJFUzI1NiJ9.${b64url}.c2ln`;
+
+    const input = purchaseInputFromIap(
+      {
+        productId: "pro.monthly",
+        transactionId: "2000000999", // a renewal; original id NOT provided
+        jwsRepresentation: jws,
+      },
+      "apple"
+    );
+    expect(input.token).toBe("1000000456"); // old code: "2000000999"
+    expect(input.signedTransactionInfo).toBe(jws);
+  });
 });
 
 describe("async storage adapters", () => {

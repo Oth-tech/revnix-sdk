@@ -96,6 +96,9 @@ describe("C7 entitlement cache", () => {
       customerId: "cust-c7",
       reportInstalls: false,
       fetch: fetchImpl,
+      // REV-199: this test exercises the offline fallback, so the soft TTL
+      // must not answer the second read from memory.
+      entitlementsTtlMs: 0,
     });
 
     const fresh = await client.getEntitlements();
@@ -156,6 +159,8 @@ describe("REV-157 local expiry on cached entitlements", () => {
       customerId: "cust-c7",
       reportInstalls: false,
       fetch: fetchImpl,
+      // REV-199: these tests exercise the cache-served path — TTL off.
+      entitlementsTtlMs: 0,
     });
     const fresh = await client.getEntitlements();
     // The fresh read is authoritative — served verbatim even when the local
@@ -267,5 +272,229 @@ describe("C7 persisted purchase retry", () => {
       (await storage.getItem("revnix.pendingPurchases")) as string
     );
     expect(queued).toHaveLength(1);
+  });
+});
+
+// REV-198 (M22): the cache rides out transient failures only — a deliberate
+// server answer must surface, or there is no kill switch.
+describe("REV-198 cache fallback discipline", () => {
+  test("a 401 (revoked key) is NOT papered over by the cache", async () => {
+    const storage = memoryStorage();
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(ENT_BODY)) // warm the cache
+      .mockResolvedValue(jsonResponse({ error: "revoked" }, 401));
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: fetchImpl,
+      entitlementsTtlMs: 0,
+    });
+    await client.getEntitlements(); // cached
+    await expect(client.getEntitlements()).rejects.toMatchObject({
+      status: 401,
+    });
+  });
+
+  test("a 404 unknown placement is NOT papered over by the cache", async () => {
+    const storage = memoryStorage();
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({ status: "ok", placementKey: "main", revision: 1 })
+      )
+      .mockResolvedValue(jsonResponse({ error: "unknown placement" }, 404));
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage,
+      reportInstalls: false,
+      fetch: fetchImpl,
+    });
+    await client.resolvePlacement("main"); // cached
+    await expect(client.resolvePlacement("main")).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  test("a 500 still falls back to the cache (that is what it is for)", async () => {
+    const storage = memoryStorage();
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(ENT_BODY))
+      .mockResolvedValue(jsonResponse({ error: "boom" }, 500));
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: fetchImpl,
+      entitlementsTtlMs: 0,
+    });
+    await client.getEntitlements();
+    const cached = await client.getEntitlements();
+    expect(cached.stale).toBe(true);
+    expect(cached.entitlements[0]?.isActive).toBe(true);
+  });
+});
+
+// REV-198 (M23): fetchedAt bounds how long a stale snapshot grants access.
+describe("REV-198 offline cache age bound", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  async function serveWithFetchedAt(fetchedAt: number) {
+    const storage = memoryStorage();
+    await storage.setItem(
+      "revnix.entitlements",
+      JSON.stringify({ customerId: "cust-c7", data: ENT_BODY, fetchedAt })
+    );
+    const offline = jest
+      .fn<typeof fetch>()
+      .mockRejectedValue(new Error("offline"));
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: offline,
+      entitlementsTtlMs: 0,
+    });
+    return client.getEntitlements();
+  }
+
+  test("a lifetime entitlement stops granting past the offline window", async () => {
+    const tooOld = await serveWithFetchedAt(Date.now() - 15 * DAY_MS);
+    expect(tooOld.stale).toBe(true);
+    expect(tooOld.entitlements[0]?.isActive).toBe(false);
+  });
+
+  test("within the window it still grants", async () => {
+    const recent = await serveWithFetchedAt(Date.now() - 13 * DAY_MS);
+    expect(recent.entitlements[0]?.isActive).toBe(true);
+  });
+
+  test("a rolled-back clock (now before fetchedAt) stops granting", async () => {
+    const future = await serveWithFetchedAt(Date.now() + 60 * 60 * 1000);
+    expect(future.entitlements[0]?.isActive).toBe(false);
+  });
+});
+
+// REV-199 (M21): soft TTL + in-flight coalescing on entitlement reads.
+describe("REV-199 entitlement read TTL + coalescing", () => {
+  test("reads within the TTL cost one request; concurrent reads share one", async () => {
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockImplementation(async () => jsonResponse(ENT_BODY));
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage: memoryStorage(),
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: fetchImpl,
+    });
+    // Concurrent burst → one request.
+    await Promise.all([
+      client.isEntitled("pro"),
+      client.isEntitled("pro"),
+      client.getEntitlements(),
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // Within the TTL → still one.
+    await client.getEntitlements();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test("entitlementsTtlMs: 0 restores always-fetch", async () => {
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockImplementation(async () => jsonResponse(ENT_BODY));
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage: memoryStorage(),
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: fetchImpl,
+      entitlementsTtlMs: 0,
+    });
+    await client.getEntitlements();
+    await client.getEntitlements();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+});
+
+// REV-200 (M26): background failures produce signal, not silence.
+describe("REV-200 diagnostics", () => {
+  test("a failed background retry reaches onDiagnostic and the next request's header", async () => {
+    const events: Array<{ op: string }> = [];
+    const storage = memoryStorage();
+    // A queued purchase from a "previous launch" whose retry will fail.
+    await storage.setItem(
+      "revnix.pendingPurchases",
+      JSON.stringify([
+        {
+          customerId: "cust-d",
+          input: {
+            source: "apple",
+            token: "otx-9",
+            productId: "pro.monthly",
+            transactionId: "tx-9",
+          },
+        },
+      ])
+    );
+    let sawHeader: string | null = null;
+    const fetchImpl = jest.fn<typeof fetch>().mockImplementation(
+      async (url, init) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        if (String(url).includes("/entitlements")) {
+          sawHeader = headers["X-Revnix-Bg-Failures"] ?? null;
+          return jsonResponse(ENT_BODY);
+        }
+        throw new Error("offline"); // the retry pass fails
+      }
+    );
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: fetchImpl,
+      onDiagnostic: (e) => events.push({ op: e.op }),
+      entitlementsTtlMs: 0,
+    });
+    // Let the constructor's background retry run and fail.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(events.length).toBeGreaterThan(0);
+
+    // The counter rides the next successful request…
+    await client.getEntitlements();
+    expect(sawHeader).not.toBeNull();
+    expect(Number(sawHeader)).toBeGreaterThan(0);
+
+    // …and is cleared once delivered.
+    await client.getEntitlements();
+    expect(sawHeader).toBeNull();
+  });
+
+  test("a throwing onDiagnostic never takes the SDK down", async () => {
+    const offline = jest
+      .fn<typeof fetch>()
+      .mockRejectedValue(new Error("offline"));
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage: memoryStorage(),
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: offline,
+      onDiagnostic: () => {
+        throw new Error("reporter broke");
+      },
+    });
+    // Background prefetch/retry paths run without an unhandled rejection.
+    await new Promise((r) => setTimeout(r, 20));
+    await expect(client.getEntitlements()).rejects.toBeInstanceOf(
+      RevnixNetworkError
+    );
   });
 });

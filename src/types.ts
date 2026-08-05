@@ -39,6 +39,34 @@ export interface RevnixConfig {
    *  forget, never blocks startup), so the session's first paywall can render
    *  from cache even when the device is offline by the time it is shown. */
   prefetchPlacements?: string[];
+  /** REV-198 (M23): how old a cached entitlements snapshot may be and still
+   *  grant access when served offline. Beyond this (or when the device clock
+   *  sits BEFORE the snapshot was written — a rollback), cached entitlements
+   *  are served inactive. Default 14 days. */
+  offlineMaxCacheAgeMs?: number;
+  /** REV-199 (M21): soft TTL on entitlement reads — a fresh network read
+   *  younger than this answers getEntitlements()/isEntitled() from memory,
+   *  so gating several screens costs one request, not one each. Pass 0 for
+   *  the old always-fetch behavior. Default 30000. */
+  entitlementsTtlMs?: number;
+  /** REV-200 (M26): called whenever a background operation fails — purchase
+   *  retries, placement prefetch, install/paywall reporting, storage
+   *  read/writes. These were all silent (`catch(() => {})`), so a fleet
+   *  failing BEFORE the server (DNS block, broken storage adapter) produced
+   *  no signal anywhere. Wire this to your crash/analytics reporter. Must
+   *  not throw; exceptions from it are swallowed. */
+  onDiagnostic?: (event: RevnixDiagnostic) => void;
+}
+
+/** REV-200 (M26): one background failure. */
+export interface RevnixDiagnostic {
+  /** Which background operation failed, e.g. "retryPendingPurchases",
+   *  "prefetchPlacement", "reportInstall", "logPaywallShown",
+   *  "waitForEntitlements", "storageWrite", "storageRead". */
+  op: string;
+  error: unknown;
+  /** Unix ms. */
+  at: number;
 }
 
 export interface RevnixStorage {
