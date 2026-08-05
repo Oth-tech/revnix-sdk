@@ -49,6 +49,24 @@ export interface RevnixConfig {
    *  so gating several screens costs one request, not one each. Pass 0 for
    *  the old always-fetch behavior. Default 30000. */
   entitlementsTtlMs?: number;
+  /** REV-200 (M26): called whenever a background operation fails — purchase
+   *  retries, placement prefetch, install/paywall reporting, storage
+   *  read/writes. These were all silent (`catch(() => {})`), so a fleet
+   *  failing BEFORE the server (DNS block, broken storage adapter) produced
+   *  no signal anywhere. Wire this to your crash/analytics reporter. Must
+   *  not throw; exceptions from it are swallowed. */
+  onDiagnostic?: (event: RevnixDiagnostic) => void;
+}
+
+/** REV-200 (M26): one background failure. */
+export interface RevnixDiagnostic {
+  /** Which background operation failed, e.g. "retryPendingPurchases",
+   *  "prefetchPlacement", "reportInstall", "logPaywallShown",
+   *  "waitForEntitlements", "storageWrite", "storageRead". */
+  op: string;
+  error: unknown;
+  /** Unix ms. */
+  at: number;
 }
 
 export interface RevnixStorage {

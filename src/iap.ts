@@ -37,6 +37,49 @@ function jwsFromIap(purchase: IapPurchase): string | undefined {
   return undefined;
 }
 
+// REV-200 (CTO-R2 M25): base64url → string without atob (not available on
+// every React Native runtime). The ids read from the payload are ASCII;
+// multi-byte content is never consulted.
+const B64_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function base64UrlDecode(segment: string): string {
+  const b64 = segment.replace(/-/g, "+").replace(/_/g, "/");
+  let out = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const ch of b64) {
+    const idx = B64_ALPHABET.indexOf(ch);
+    if (idx === -1) continue; // padding / stray characters
+    buffer = (buffer << 6) | idx;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out += String.fromCharCode((buffer >> bits) & 0xff);
+    }
+  }
+  return out;
+}
+
+// The JWS payload's own ids — read WITHOUT verifying the signature, which is
+// fine here: the server verifies the chain and only trusts the proof when the
+// verified payload's ids match what we send. Reading them locally is exactly
+// how we make them match.
+function jwsPayload(
+  jws: string
+): { originalTransactionId?: string; transactionId?: string } | undefined {
+  try {
+    const segment = jws.split(".")[1];
+    if (!segment) return undefined;
+    const parsed: unknown = JSON.parse(base64UrlDecode(segment));
+    return typeof parsed === "object" && parsed !== null
+      ? (parsed as { originalTransactionId?: string; transactionId?: string })
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function purchaseInputFromIap(
   purchase: IapPurchase,
   source: Store,
@@ -47,11 +90,24 @@ export function purchaseInputFromIap(
     if (!transactionId) {
       throw new Error("Revnix: Apple purchase is missing transactionId");
     }
+    const jws = jwsFromIap(purchase);
+    const proof = jws ? jwsPayload(jws) : undefined;
     return {
       source,
-      // First purchase: originalTransactionId === transactionId, and StoreKit
-      // may omit the original — fall back to the transaction itself.
-      token: purchase.originalTransactionIdentifierIOS ?? transactionId,
+      // REV-200 (M25): token precedence. The old fallback (original id
+      // missing → the renewal's own transactionId) minted a purchaseKey the
+      // store webhook would never produce — a second purchase.completed and
+      // double-counted revenue — AND failed the server's proof check, which
+      // requires the verified JWS's originalTransactionId to EQUAL this
+      // token, silently downgrading a proof-carrying purchase to
+      // provisional. The JWS payload names the true original id, so when a
+      // JWS is present it wins; the IAP library's field is next; the bare
+      // transactionId remains only for the proof-less first purchase, where
+      // original === transaction anyway.
+      token:
+        proof?.originalTransactionId ??
+        purchase.originalTransactionIdentifierIOS ??
+        transactionId,
       productId: purchase.productId,
       transactionId,
       occurredAt: purchase.transactionDate ?? undefined,
@@ -59,7 +115,7 @@ export function purchaseInputFromIap(
       rawPayload: extras?.rawPayload,
       // Without this the purchase lands PROVISIONAL (see
       // RegisterPurchaseInput.signedTransactionInfo).
-      signedTransactionInfo: jwsFromIap(purchase),
+      signedTransactionInfo: jws,
     };
   }
   const token = purchase.purchaseToken;

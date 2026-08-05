@@ -10,6 +10,7 @@ import { generateAnonymousId, generateViewId, resolveStorage } from "./storage.j
 import { SDK_VERSION } from "./version.js";
 import type {
   AliasResult,
+  RevnixDiagnostic,
   CustomerEntitlements,
   IdentifyResult,
   IdentifyStrategy,
@@ -90,6 +91,14 @@ export class RevnixClient {
   private readonly readYourWritesDelaysMs: number[];
   private readonly offlineMaxCacheAgeMs: number;
   private readonly entitlementsTtlMs: number;
+  // REV-200 (CTO-R2 M26): background failures used to vanish into
+  // catch(() => {}) — a fleet failing before the server produced silence.
+  // Every such site now reports here: the app's onDiagnostic callback gets
+  // the event, and a counter rides the next successful request as an
+  // X-Revnix-Bg-Failures header so the backend can see field pain it would
+  // otherwise never receive.
+  private readonly onDiagnostic?: (event: RevnixDiagnostic) => void;
+  private bgFailures = 0;
   private customerIdPromise: Promise<string>;
 
   constructor(config: RevnixConfig) {
@@ -109,17 +118,22 @@ export class RevnixClient {
       config.offlineMaxCacheAgeMs ?? DEFAULT_OFFLINE_MAX_CACHE_AGE_MS;
     this.entitlementsTtlMs =
       config.entitlementsTtlMs ?? DEFAULT_ENTITLEMENTS_TTL_MS;
+    this.onDiagnostic = config.onDiagnostic;
     this.readYourWritesDelaysMs =
       config.readYourWritesDelaysMs ?? [250, 500, 1000, 2000];
     this.customerIdPromise = this.loadCustomerId(config.customerId);
     // C7: retry any purchases that failed to register on a previous launch, so
     // a paying user never stays locked out because a POST didn't land.
-    void this.retryPendingPurchases().catch(() => {});
+    void this.retryPendingPurchases().catch((err) =>
+      this.diag("retryPendingPurchases", err)
+    );
     // REV-157: warm the placement cache at launch, so the first paywall of the
     // session can render offline. Fire-and-forget; a failed key just stays on
     // whatever an earlier launch cached.
     for (const key of config.prefetchPlacements ?? []) {
-      void this.resolvePlacement(key).catch(() => {});
+      void this.resolvePlacement(key).catch((err) =>
+        this.diag("prefetchPlacement", err)
+      );
     }
   }
 
@@ -237,7 +251,9 @@ export class RevnixClient {
       // cursor can never reach, so every delay would be waited out in full
       // before giving up.
       if (this.readYourWritesDelaysMs.length > 0 && !result.ownedByOtherCustomer) {
-        await this.waitForEntitlements(result.seq).catch(() => {});
+        await this.waitForEntitlements(result.seq).catch((err) =>
+          this.diag("waitForEntitlements", err)
+        );
       }
       return result;
     } catch (err) {
@@ -274,8 +290,14 @@ export class RevnixClient {
         await this.postPurchase(item.customerId, item.input);
         // Delivered — remove it.
       } catch (err) {
-        if (worthQueueing(err)) continue; // transient — keep for next time
+        if (worthQueueing(err)) {
+          // REV-200 (M26): a queued purchase that STILL cannot land is the
+          // most important background failure there is — report it.
+          this.diag("retryPendingPurchases", err);
+          continue; // transient — keep for next time
+        }
         // Permanent rejection — remove it.
+        this.diag("retryPendingPurchases", err);
       }
       // Remove THIS item from the queue as it stands now, not from the
       // snapshot iterated above: each postPurchase can spend seconds in a
@@ -534,7 +556,17 @@ export class RevnixClient {
           ...(options?.paywallId ? { paywallId: options.paywallId } : {}),
         })
       )
-      .catch(() => {});
+      .catch((err) => this.diag("logPaywallShown", err));
+  }
+
+  // REV-200 (M26): record one background failure. Never throws.
+  private diag(op: string, error: unknown): void {
+    this.bgFailures += 1;
+    try {
+      this.onDiagnostic?.({ op, error, at: Date.now() });
+    } catch {
+      // The reporter itself must never take the SDK down.
+    }
   }
 
   private async loadCustomerId(initial?: string): Promise<string> {
@@ -561,7 +593,7 @@ export class RevnixClient {
       occurredAt: Date.now(),
       sdkVersion: SDK_VERSION,
       ...this.installMetadata,
-    }).catch(() => {});
+    }).catch((err) => this.diag("reportInstall", err));
   }
 
   private async setCustomerId(customerId: string): Promise<void> {
@@ -580,8 +612,11 @@ export class RevnixClient {
         ENTITLEMENTS_CACHE_KEY,
         JSON.stringify({ customerId, data, fetchedAt: Date.now() })
       );
-    } catch {
-      // Caching is best-effort — a failure to persist must never break a read.
+    } catch (err) {
+      // Caching is best-effort — a failure to persist must never break a
+      // read. REV-200 (M26): but a broken storage adapter is exactly the
+      // fleet-wide failure that used to produce pure silence — report it.
+      this.diag("storageWrite", err);
     }
   }
 
@@ -600,7 +635,8 @@ export class RevnixClient {
       // logout/identify the cached entitlements belong to a different customer.
       if (parsed.customerId !== customerId) return null;
       return { data: parsed.data, fetchedAt: parsed.fetchedAt };
-    } catch {
+    } catch (err) {
+      this.diag("storageRead", err);
       return null;
     }
   }
@@ -640,8 +676,9 @@ export class RevnixClient {
       const map = await this.readPlacementMap();
       map[placementKey] = { data, fetchedAt: Date.now() };
       await this.storage.setItem(PLACEMENTS_CACHE_KEY, JSON.stringify(map));
-    } catch {
-      // Caching is best-effort — a failure to persist must never break a read.
+    } catch (err) {
+      // Best-effort, but reported (REV-200 M26).
+      this.diag("storageWrite", err);
     }
   }
 
@@ -680,8 +717,10 @@ export class RevnixClient {
   private async writePurchaseQueue(queue: PendingPurchase[]): Promise<void> {
     try {
       await this.storage.setItem(PENDING_PURCHASES_KEY, JSON.stringify(queue));
-    } catch {
-      // best-effort
+    } catch (err) {
+      // Best-effort, but reported (REV-200 M26) — a queue that cannot
+      // persist is a purchase that will not survive a restart.
+      this.diag("storageWrite", err);
     }
   }
 
@@ -710,6 +749,11 @@ export class RevnixClient {
       ? setTimeout(() => controller.abort(), this.requestTimeoutMs)
       : undefined;
 
+    // REV-200 (M26): piggyback the background-failure counter on this
+    // request so field pain reaches the backend's request logs. Cleared only
+    // for the count actually sent, and only on a delivered response —
+    // failures that pile up mid-flight ride the next one.
+    const reportedBgFailures = this.bgFailures;
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -719,6 +763,9 @@ export class RevnixClient {
           // L3: identify the SDK on EVERY request (reads included) so the
           // backend can triage by version without depending on body fields.
           "X-Revnix-SDK": `revnix-react/${SDK_VERSION}`,
+          ...(reportedBgFailures > 0
+            ? { "X-Revnix-Bg-Failures": String(reportedBgFailures) }
+            : {}),
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -739,6 +786,9 @@ export class RevnixClient {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+
+    // The counter reached the server (any HTTP status is a delivery).
+    this.bgFailures = Math.max(0, this.bgFailures - reportedBgFailures);
 
     let parsed: unknown;
     try {

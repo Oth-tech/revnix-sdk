@@ -422,3 +422,79 @@ describe("REV-199 entitlement read TTL + coalescing", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });
+
+// REV-200 (M26): background failures produce signal, not silence.
+describe("REV-200 diagnostics", () => {
+  test("a failed background retry reaches onDiagnostic and the next request's header", async () => {
+    const events: Array<{ op: string }> = [];
+    const storage = memoryStorage();
+    // A queued purchase from a "previous launch" whose retry will fail.
+    await storage.setItem(
+      "revnix.pendingPurchases",
+      JSON.stringify([
+        {
+          customerId: "cust-d",
+          input: {
+            source: "apple",
+            token: "otx-9",
+            productId: "pro.monthly",
+            transactionId: "tx-9",
+          },
+        },
+      ])
+    );
+    let sawHeader: string | null = null;
+    const fetchImpl = jest.fn<typeof fetch>().mockImplementation(
+      async (url, init) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        if (String(url).includes("/entitlements")) {
+          sawHeader = headers["X-Revnix-Bg-Failures"] ?? null;
+          return jsonResponse(ENT_BODY);
+        }
+        throw new Error("offline"); // the retry pass fails
+      }
+    );
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: fetchImpl,
+      onDiagnostic: (e) => events.push({ op: e.op }),
+      entitlementsTtlMs: 0,
+    });
+    // Let the constructor's background retry run and fail.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(events.length).toBeGreaterThan(0);
+
+    // The counter rides the next successful request…
+    await client.getEntitlements();
+    expect(sawHeader).not.toBeNull();
+    expect(Number(sawHeader)).toBeGreaterThan(0);
+
+    // …and is cleared once delivered.
+    await client.getEntitlements();
+    expect(sawHeader).toBeNull();
+  });
+
+  test("a throwing onDiagnostic never takes the SDK down", async () => {
+    const offline = jest
+      .fn<typeof fetch>()
+      .mockRejectedValue(new Error("offline"));
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage: memoryStorage(),
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: offline,
+      onDiagnostic: () => {
+        throw new Error("reporter broke");
+      },
+    });
+    // Background prefetch/retry paths run without an unhandled rejection.
+    await new Promise((r) => setTimeout(r, 20));
+    await expect(client.getEntitlements()).rejects.toBeInstanceOf(
+      RevnixNetworkError
+    );
+  });
+});
