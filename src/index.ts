@@ -31,6 +31,7 @@ export type {
   RegisterPurchaseInput,
   RegisterPurchaseResult,
   RevnixConfig,
+  RevnixDiagnostic,
   RevnixStorage,
   Store,
 } from "./types.js";
