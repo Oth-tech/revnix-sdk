@@ -41,6 +41,10 @@ let instance: RevnixClient | null = null;
  *  anywhere. Prefer constructing RevnixClient directly in tests. */
 export const Revnix = {
   configure(config: RevnixConfig): RevnixClient {
+    // REV-204 (L10): dev fast-refresh re-runs configure(); without teardown
+    // the old client kept its retry/prefetch background work running
+    // alongside the new one.
+    instance?.dispose();
     instance = new RevnixClient(config);
     return instance;
   },

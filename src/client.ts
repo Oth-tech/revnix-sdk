@@ -28,6 +28,13 @@ const PENDING_PURCHASES_KEY = "revnix.pendingPurchases";
 const PLACEMENTS_CACHE_KEY = "revnix.placements";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+// REV-204 (L10): how many customers keep a cached entitlements snapshot.
+const ENTITLEMENTS_CACHE_MAX = 4;
+
+// REV-204 (L10): http:// is tolerated only for development hosts.
+const PRIVATE_HTTP_HOST =
+  /^http:\/\/(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[::1\])/i;
+
 // REV-157: how long past a cached entitlement's expiresAt it is still served
 // as active. An offline device cannot see the renewal that most likely
 // happened at expiry — cutting access at the cached timestamp would lock a
@@ -99,6 +106,10 @@ export class RevnixClient {
   // otherwise never receive.
   private readonly onDiagnostic?: (event: RevnixDiagnostic) => void;
   private bgFailures = 0;
+  // REV-204 (L10): set by dispose() — stops background loops so a replaced
+  // client (dev fast-refresh re-running configure()) does not keep retrying
+  // and prefetching alongside its successor.
+  private disposed = false;
   private customerIdPromise: Promise<string>;
 
   constructor(config: RevnixConfig) {
@@ -106,6 +117,17 @@ export class RevnixClient {
     if (!config.baseUrl) throw new Error("Revnix: baseUrl is required");
     this.apiKey = config.apiKey;
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
+    // REV-204 (L10): a plaintext public base URL ships API keys and
+    // entitlements over HTTP. Loopback/private hosts stay allowed — local
+    // convex dev and device-to-LAN development legitimately use them.
+    if (
+      this.baseUrl.startsWith("http://") &&
+      !PRIVATE_HTTP_HOST.test(this.baseUrl)
+    ) {
+      throw new Error(
+        "Revnix: baseUrl must be https:// (http:// is only allowed for localhost/private-network development hosts)"
+      );
+    }
     // M5: web falls back to localStorage automatically; truly memory-only
     // (RN without an adapter) warns and disables install reporting below.
     const resolved = resolveStorage(config.storage);
@@ -286,6 +308,7 @@ export class RevnixClient {
   async retryPendingPurchases(): Promise<void> {
     const queue = await this.readPurchaseQueue();
     for (const item of queue) {
+      if (this.disposed) return;
       try {
         await this.postPurchase(item.customerId, item.input);
         // Delivered — remove it.
@@ -406,7 +429,7 @@ export class RevnixClient {
     const customerId = await this.customerIdPromise;
     let last = await this.getEntitlements();
     for (const delayMs of this.readYourWritesDelaysMs) {
-      if (!last.stale && last.cursor >= seq) return last;
+      if (this.disposed || (!last.stale && last.cursor >= seq)) return last;
       // REV-199 (M24): ±20% jitter — promo pushes synchronize a fleet's
       // purchases, and identical delay schedules kept every device's poll in
       // lockstep against our own rate limiter.
@@ -559,6 +582,14 @@ export class RevnixClient {
       .catch((err) => this.diag("logPaywallShown", err));
   }
 
+  /** REV-204 (L10): stop this client's background work (purchase retries,
+   *  read-your-writes polls). Called automatically when Revnix.configure()
+   *  replaces the singleton; call it yourself when discarding a manually
+   *  constructed client. */
+  dispose(): void {
+    this.disposed = true;
+  }
+
   // REV-200 (M26): record one background failure. Never throws.
   private diag(op: string, error: unknown): void {
     this.bgFailures += 1;
@@ -570,14 +601,31 @@ export class RevnixClient {
   }
 
   private async loadCustomerId(initial?: string): Promise<string> {
+    // REV-204 (L10): a throwing storage adapter (quota, corruption) used to
+    // reject customerIdPromise FOREVER — every subsequent API call then
+    // failed on the await of an id that exists in memory. Storage problems
+    // are reported (M26) and survived; the id lives on for the session.
     if (initial) {
-      await this.storage.setItem(CUSTOMER_ID_KEY, initial);
+      try {
+        await this.storage.setItem(CUSTOMER_ID_KEY, initial);
+      } catch (err) {
+        this.diag("storageWrite", err);
+      }
       return initial;
     }
-    const stored = await this.storage.getItem(CUSTOMER_ID_KEY);
+    let stored: string | null = null;
+    try {
+      stored = await this.storage.getItem(CUSTOMER_ID_KEY);
+    } catch (err) {
+      this.diag("storageRead", err);
+    }
     if (stored) return stored;
     const anonymousId = generateAnonymousId();
-    await this.storage.setItem(CUSTOMER_ID_KEY, anonymousId);
+    try {
+      await this.storage.setItem(CUSTOMER_ID_KEY, anonymousId);
+    } catch (err) {
+      this.diag("storageWrite", err);
+    }
     // A freshly generated id IS the install signal: first launch on this
     // device (or a reinstall that wiped storage). logout() deliberately does
     // not report — a new anonymous session is not a new install.
@@ -603,15 +651,60 @@ export class RevnixClient {
 
   // ——— C7: entitlement cache (best-effort; storage failures never throw) ———
 
+  // REV-204 (L10): the cache used to be single-slot — writing customer B
+  // dropped customer A, so the first offline launch after identify()/logout()
+  // had no gate at all. It is a small per-customer map now (legacy single-slot
+  // payloads migrate on read); ENTITLEMENTS_CACHE_MAX bounds it because
+  // logout() mints a fresh anonymous id every time.
+  private async readEntitlementsMap(): Promise<
+    Record<string, { data: CustomerEntitlements; fetchedAt: number }>
+  > {
+    try {
+      const raw = await this.storage.getItem(ENTITLEMENTS_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return {};
+      }
+      // Pre-REV-204 single-slot shape: { customerId, data, fetchedAt }.
+      if ("customerId" in parsed && "data" in parsed) {
+        const legacy = parsed as {
+          customerId: string;
+          data: CustomerEntitlements;
+          fetchedAt: number;
+        };
+        return {
+          [legacy.customerId]: {
+            data: legacy.data,
+            fetchedAt: legacy.fetchedAt,
+          },
+        };
+      }
+      return parsed as Record<
+        string,
+        { data: CustomerEntitlements; fetchedAt: number }
+      >;
+    } catch (err) {
+      this.diag("storageRead", err);
+      return {};
+    }
+  }
+
   private async writeEntitlementsCache(
     customerId: string,
     data: CustomerEntitlements
   ): Promise<void> {
     try {
-      await this.storage.setItem(
-        ENTITLEMENTS_CACHE_KEY,
-        JSON.stringify({ customerId, data, fetchedAt: Date.now() })
-      );
+      const map = await this.readEntitlementsMap();
+      map[customerId] = { data, fetchedAt: Date.now() };
+      const ids = Object.keys(map);
+      if (ids.length > ENTITLEMENTS_CACHE_MAX) {
+        ids
+          .sort((a, b) => (map[a]?.fetchedAt ?? 0) - (map[b]?.fetchedAt ?? 0))
+          .slice(0, ids.length - ENTITLEMENTS_CACHE_MAX)
+          .forEach((id) => delete map[id]);
+      }
+      await this.storage.setItem(ENTITLEMENTS_CACHE_KEY, JSON.stringify(map));
     } catch (err) {
       // Caching is best-effort — a failure to persist must never break a
       // read. REV-200 (M26): but a broken storage adapter is exactly the
@@ -623,22 +716,8 @@ export class RevnixClient {
   private async readEntitlementsCache(
     customerId: string
   ): Promise<{ data: CustomerEntitlements; fetchedAt: number } | null> {
-    try {
-      const raw = await this.storage.getItem(ENTITLEMENTS_CACHE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as {
-        customerId: string;
-        data: CustomerEntitlements;
-        fetchedAt: number;
-      };
-      // Only trust the cache for the id it was written under — after a
-      // logout/identify the cached entitlements belong to a different customer.
-      if (parsed.customerId !== customerId) return null;
-      return { data: parsed.data, fetchedAt: parsed.fetchedAt };
-    } catch (err) {
-      this.diag("storageRead", err);
-      return null;
-    }
+    const map = await this.readEntitlementsMap();
+    return map[customerId] ?? null;
   }
 
   // ——— REV-157: placement cache (best-effort; storage failures never throw) ———
@@ -795,6 +874,16 @@ export class RevnixClient {
       parsed = await res.json();
     } catch {
       parsed = undefined;
+    }
+    // REV-204 (L10): a 200 with a non-JSON body used to come back as
+    // `undefined as T` — registerPurchase then threw a TypeError AFTER the
+    // server had already recorded the purchase. Fail as a typed, retryable
+    // error instead (a proxy/captive portal mangling the body is transient).
+    if (res.ok && parsed === undefined) {
+      throw new RevnixError(
+        0,
+        `Revnix: server returned a non-JSON response for ${path}`
+      );
     }
     if (!res.ok) {
       const message =
