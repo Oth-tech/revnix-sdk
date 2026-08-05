@@ -570,3 +570,95 @@ describe("M9: read-your-writes after registerPurchase", () => {
     await expect(client.registerPurchase(PURCHASE)).resolves.toMatchObject({ seq: 2 });
   });
 });
+
+// REV-204 (L10): SDK hygiene contracts.
+describe("REV-204 hygiene", () => {
+  test("public http:// baseUrl is refused; localhost is allowed", () => {
+    expect(
+      () =>
+        new RevnixClient({
+          apiKey: "rvx_pk_test_abc",
+          baseUrl: "http://api.example.com",
+          storage: memoryStorage(),
+          reportInstalls: false,
+        })
+    ).toThrow(/https/);
+    expect(
+      () =>
+        new RevnixClient({
+          apiKey: "rvx_pk_test_abc",
+          baseUrl: "http://localhost:8187",
+          storage: memoryStorage(),
+          reportInstalls: false,
+        })
+    ).not.toThrow();
+  });
+
+  test("entitlement cache keeps multiple customers (identify/logout survives offline)", async () => {
+    const storage = memoryStorage();
+    const body = (id: string) => ({
+      customerId: id,
+      cursor: 1,
+      entitlements: [{ entitlementId: "pro", isActive: true, sources: [] }],
+    });
+    const fetchA = jest
+      .fn<typeof fetch>()
+      .mockImplementation(async () =>
+        new Response(JSON.stringify(body("cust-a")), { status: 200 })
+      );
+    const a = new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-a",
+      reportInstalls: false,
+      fetch: fetchA,
+    });
+    await a.getEntitlements();
+
+    const fetchB = jest
+      .fn<typeof fetch>()
+      .mockImplementationOnce(async () =>
+        new Response(JSON.stringify(body("cust-b")), { status: 200 })
+      )
+      .mockRejectedValue(new Error("offline"));
+    const b = new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-b",
+      reportInstalls: false,
+      fetch: fetchB,
+      entitlementsTtlMs: 0,
+    });
+    await b.getEntitlements(); // caches cust-b WITHOUT dropping cust-a
+    // Offline read for cust-a still has a gate (old single-slot cache lost it).
+    const backToA = new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-a",
+      reportInstalls: false,
+      fetch: jest.fn<typeof fetch>().mockRejectedValue(new Error("offline")),
+    });
+    const cached = await backToA.getCachedEntitlements();
+    expect(cached?.entitlements[0]?.entitlementId).toBe("pro");
+  });
+
+  test("a throwing storage adapter still yields a customer id", async () => {
+    const broken = {
+      getItem: () => {
+        throw new Error("quota");
+      },
+      setItem: () => {
+        throw new Error("quota");
+      },
+    };
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage: broken,
+      reportInstalls: false,
+      fetch: jest.fn<typeof fetch>().mockRejectedValue(new Error("offline")),
+    });
+    // Old behavior: customerIdPromise rejected forever → every call died here.
+    const id = await client.getCustomerId();
+    expect(id).toMatch(/^rvx_anon_/);
+  });
+});

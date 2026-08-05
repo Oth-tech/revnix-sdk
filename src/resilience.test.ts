@@ -226,7 +226,10 @@ describe("C7 persisted purchase retry", () => {
     expect(queued[0].input.token).toBe("otx-1");
 
     // A later launch with connectivity drains the queue (idempotent server-side).
-    const okFetch = jest.fn<typeof fetch>().mockResolvedValue(
+    // REV-204: a FRESH Response per call — a Response body is single-use, and
+    // the shared-instance version of this mock returned an already-consumed
+    // body on the second call, which the non-JSON guard now correctly rejects.
+    const okFetch = jest.fn<typeof fetch>().mockImplementation(async () =>
       jsonResponse(
         {
           eventId: "e1",
