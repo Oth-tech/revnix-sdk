@@ -32,6 +32,11 @@
       "import": "./dist/esm/ui/index.js",
       "require": "./ui.js"
     },
+    "./hooks": {
+      "types": "./hooks.d.ts",
+      "import": "./dist/esm/hooks/index.js",
+      "require": "./hooks.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -39,6 +44,8 @@
     "src",
     "ui.js",
     "ui.d.ts",
+    "hooks.js",
+    "hooks.d.ts",
     "!src/**/*.test.ts"
   ],
   "scripts": {
