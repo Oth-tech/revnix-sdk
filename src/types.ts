@@ -222,7 +222,19 @@ export interface PlacementOffering {
 // store (StoreKit / Play Billing) so the display never disagrees with the
 // charge.
 export interface PaywallConfig {
-  template: "focus" | "feature-list" | "minimal";
+  /** Layout — the screen structure RevnixPaywall renders. The dashboard's
+   *  template gallery is presets over these layouts; the first three are the
+   *  original templates and render exactly as before. */
+  template:
+    | "focus"
+    | "feature-list"
+    | "minimal"
+    | "hero"
+    | "timeline"
+    | "plans"
+    | "feature-grid"
+    | "offer"
+    | "reveal";
   /** Color scheme the paywall renders in. Absent (legacy config) = dark.
    *  The host app's explicit `theme` prop still overrides either scheme. */
   mode?: "dark" | "light";
@@ -238,6 +250,22 @@ export interface PaywallConfig {
   accent?: string;
   /** Hero image URL rendered above the headline in place of the icon tile. */
   heroImageUrl?: string;
+  /** Social proof, dashboard-configured. Any layout renders the pieces that
+   *  are set: stars/quote card above the packages, `count` under the CTA. */
+  review?: {
+    /** 0–5; rendered as a star row. */
+    rating?: number;
+    quote?: string;
+    author?: string;
+    /** e.g. "Join 2M+ users" — small line under the CTA. */
+    count?: string;
+  };
+  /** Win-back/offer presentation: anchor price struck through on the
+   *  highlighted package, urgency line above the CTA. Any layout. */
+  offer?: {
+    strikethroughPrice?: string;
+    urgencyText?: string;
+  };
   /** Footer links, dashboard-configured. Absent (legacy config) = show all
    *  three. When a URL is set the SDK opens it directly; otherwise the host
    *  app's onTerms/onPrivacy handler runs. */
