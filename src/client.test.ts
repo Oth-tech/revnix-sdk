@@ -266,12 +266,14 @@ describe("reads", () => {
     const client = new RevnixClient({
       ...CONFIG,
       fetch: fetchImpl,
+      customerId: "user_42",
       reportInstalls: false,
     });
     const res = await client.resolvePlacement("paywall_main");
     expect(res.revision).toBe(2);
+    // REV-219: the customer id rides along so experiments can assign.
     expect(lastCall(fetchImpl).url).toBe(
-      "https://demo.convex.site/v1/placements/paywall_main/offering"
+      "https://demo.convex.site/v1/placements/paywall_main/offering?customer=user_42"
     );
   });
 });
@@ -364,6 +366,50 @@ describe("async storage adapters", () => {
     const client = new RevnixClient({ ...CONFIG, storage, reportInstalls: false });
     const id = await client.getCustomerId();
     expect(map.get("revnix.customerId")).toBe(id);
+  });
+});
+
+describe("customer attributes (REV-033 v2)", () => {
+  test("setAttributes posts to the customer's attributes endpoint", async () => {
+    const fetchImpl = mockFetch({
+      status: 200,
+      body: { customerId: "c1", attributes: [] },
+    });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    const id = await client.getCustomerId();
+
+    await client.setAttributes({ country: "US", sessions: 9, stale: null });
+
+    const call = lastCall(fetchImpl);
+    expect(call.url).toBe(
+      `https://demo.convex.site/v1/customers/${encodeURIComponent(id)}/attributes`
+    );
+    expect(call.method).toBe("POST");
+    expect(call.body).toEqual({
+      attributes: { country: "US", sessions: 9, stale: null },
+    });
+  });
+
+  test("a refused attribute write throws — targeting must not fail silently", async () => {
+    // The server refuses reserved keys and device-overwrites of server-set
+    // values. Unlike the telemetry beacons these are not fire-and-forget:
+    // swallowing the error would leave an audience quietly matching nobody.
+    const fetchImpl = mockFetch({
+      status: 400,
+      body: { error: 'Attribute "email" is reserved' },
+    });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    await expect(
+      client.setAttributes({ email: "a@b.c" })
+    ).rejects.toThrow();
   });
 });
 

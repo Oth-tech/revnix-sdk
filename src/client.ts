@@ -90,6 +90,12 @@ export class RevnixClient {
   private readonly storage: RevnixStorage;
   private readonly fetchImpl: typeof fetch;
   private readonly reportInstalls: boolean;
+  private readonly persistentStorage: boolean;
+  /** True while the current id is a generated anon id living on
+   *  NON-persistent storage — it changes every launch, so sending it to
+   *  the experiments path would mint a phantom enrollment per launch
+   *  (same hazard class the M5 install guard covers). */
+  private ephemeralAnonId = false;
   private readonly installMetadata?: {
     platform?: string;
     appVersion?: string;
@@ -134,6 +140,7 @@ export class RevnixClient {
     this.storage = resolved.storage;
     this.fetchImpl = config.fetch ?? fetch;
     this.reportInstalls = (config.reportInstalls ?? true) && resolved.persistent;
+    this.persistentStorage = resolved.persistent;
     this.installMetadata = config.installMetadata;
     this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.offlineMaxCacheAgeMs =
@@ -235,6 +242,7 @@ export class RevnixClient {
   async logout(): Promise<string> {
     const anonymousId = generateAnonymousId();
     await this.setCustomerId(anonymousId);
+    this.ephemeralAnonId = !this.persistentStorage;
     return anonymousId;
   }
 
@@ -523,12 +531,23 @@ export class RevnixClient {
    *  last published version rather than not at all. Throws only when there
    *  is nothing cached. */
   async resolvePlacement(placementKey: string): Promise<PlacementResolution> {
+    const customerId = await this.customerIdPromise;
     try {
+      // REV-219: identify the caller so a running experiment on this
+      // placement can assign a (sticky, deterministic) variant. Servers
+      // without experiments simply ignore the parameter. An EPHEMERAL anon
+      // id (memory-only storage — new id every launch) is deliberately NOT
+      // sent: each launch would enroll a phantom customer and flip the same
+      // user between variants; the server serves the placement default
+      // when no customer is identified (same guard class as M5 installs).
+      const path = `/v1/placements/${encodeURIComponent(placementKey)}/offering`;
       const fresh = await this.request<PlacementResolution>(
         "GET",
-        `/v1/placements/${encodeURIComponent(placementKey)}/offering`
+        this.ephemeralAnonId
+          ? path
+          : `${path}?customer=${encodeURIComponent(customerId)}`
       );
-      await this.writePlacementCache(placementKey, fresh);
+      await this.writePlacementCache(placementKey, fresh, customerId);
       return { ...fresh, stale: false, fetchedAt: Date.now() };
     } catch (err) {
       // REV-198 (M22): same rule as getEntitlements — an unpublished catalog
@@ -536,7 +555,7 @@ export class RevnixClient {
       // and caching over it meant an unpublished paywall kept rendering
       // fleet-wide with no way to pull it.
       if (err instanceof RevnixError && !err.isRetryable) throw err;
-      const cached = await this.readPlacementCache(placementKey);
+      const cached = await this.readPlacementCache(placementKey, customerId);
       if (cached) {
         return { ...cached.data, stale: true, fetchedAt: cached.fetchedAt };
       }
@@ -551,7 +570,8 @@ export class RevnixClient {
   async getCachedPlacement(
     placementKey: string
   ): Promise<PlacementResolution | null> {
-    const cached = await this.readPlacementCache(placementKey);
+    const customerId = await this.customerIdPromise;
+    const cached = await this.readPlacementCache(placementKey, customerId);
     return cached
       ? { ...cached.data, stale: true, fetchedAt: cached.fetchedAt }
       : null;
@@ -580,6 +600,31 @@ export class RevnixClient {
         })
       )
       .catch((err) => this.diag("logPaywallShown", err));
+  }
+
+  /** Set attributes on the current customer (REV-033 v2). Attributes are what
+   *  A/B-test audiences target, so this is how a mobile-only app becomes able
+   *  to run "US + UK users" tests: set `country`, `app_version`, `locale`, or
+   *  any custom key you want to segment on.
+   *
+   *  Pass `null` as a value to delete a key. Awaits the write — unlike the
+   *  fire-and-forget telemetry calls — because the very next placement
+   *  resolve may depend on it, and silently racing the audience check would
+   *  make targeting look broken.
+   *
+   *  Two server rules to know: `email` and `username` are reserved and only
+   *  settable with a secret key from your own backend, and any attribute your
+   *  backend already set is authoritative and cannot be changed from a device.
+   *  Both throw rather than partially applying. */
+  async setAttributes(
+    attributes: Record<string, string | number | null>
+  ): Promise<void> {
+    const customerId = await this.customerIdPromise;
+    await this.request(
+      "POST",
+      `/v1/customers/${encodeURIComponent(customerId)}/attributes`,
+      { attributes }
+    );
   }
 
   /** REV-204 (L10): stop this client's background work (purchase retries,
@@ -621,6 +666,7 @@ export class RevnixClient {
     }
     if (stored) return stored;
     const anonymousId = generateAnonymousId();
+    this.ephemeralAnonId = !this.persistentStorage;
     try {
       await this.storage.setItem(CUSTOMER_ID_KEY, anonymousId);
     } catch (err) {
@@ -645,6 +691,9 @@ export class RevnixClient {
   }
 
   private async setCustomerId(customerId: string): Promise<void> {
+    // Callers pass stable ids (identify/canonical adoption) — logout()
+    // re-flags its generated anon id itself.
+    this.ephemeralAnonId = false;
     this.customerIdPromise = Promise.resolve(customerId);
     await this.storage.setItem(CUSTOMER_ID_KEY, customerId);
   }
@@ -721,19 +770,34 @@ export class RevnixClient {
   }
 
   // ——— REV-157: placement cache (best-effort; storage failures never throw) ———
-  // One JSON map keyed by placementKey. Placements are app-scoped, not
-  // customer-scoped, so unlike the entitlements cache there is no per-customer
-  // ownership check — a logout/identify does not invalidate a paywall.
+  // One JSON map keyed by placementKey. A resolution WITHOUT an experiment is
+  // app-scoped and servable to any customer; one WITH an experiment embeds
+  // the assigned variant (offering/paywall/experiment) and belongs to the
+  // customer it was fetched for — reads treat it as a miss for anyone else
+  // (REV-219; the "stamp + check ownership on read" idiom of
+  // freshEntitlements). Entries are not cleared on logout/identify so the
+  // common no-experiment offline paywall keeps working across identity
+  // changes.
 
   private async readPlacementMap(): Promise<
-    Record<string, { data: PlacementResolution; fetchedAt: number }>
+    Record<
+      string,
+      { data: PlacementResolution; fetchedAt: number; customerId?: string }
+    >
   > {
     try {
       const raw = await this.storage.getItem(PLACEMENTS_CACHE_KEY);
       if (!raw) return {};
       const parsed = JSON.parse(raw);
       return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, { data: PlacementResolution; fetchedAt: number }>)
+        ? (parsed as Record<
+            string,
+            {
+              data: PlacementResolution;
+              fetchedAt: number;
+              customerId?: string;
+            }
+          >)
         : {};
     } catch {
       return {};
@@ -741,19 +805,34 @@ export class RevnixClient {
   }
 
   private async readPlacementCache(
-    placementKey: string
+    placementKey: string,
+    customerId: string
   ): Promise<{ data: PlacementResolution; fetchedAt: number } | null> {
     const map = await this.readPlacementMap();
-    return map[placementKey] ?? null;
+    const entry = map[placementKey];
+    if (!entry) return null;
+    // An experiment-assigned resolution must never cross customers — the
+    // wrong variant (and its pricing) would be shown and the purchase
+    // attributed to an assignment the server never made for this caller.
+    // Pre-REV-219 entries carry no customerId and no experiment; they pass.
+    if (
+      entry.data.experiment != null &&
+      entry.customerId !== undefined &&
+      entry.customerId !== customerId
+    ) {
+      return null;
+    }
+    return entry;
   }
 
   private async writePlacementCache(
     placementKey: string,
-    data: PlacementResolution
+    data: PlacementResolution,
+    customerId: string
   ): Promise<void> {
     try {
       const map = await this.readPlacementMap();
-      map[placementKey] = { data, fetchedAt: Date.now() };
+      map[placementKey] = { data, fetchedAt: Date.now(), customerId };
       await this.storage.setItem(PLACEMENTS_CACHE_KEY, JSON.stringify(map));
     } catch (err) {
       // Best-effort, but reported (REV-200 M26).

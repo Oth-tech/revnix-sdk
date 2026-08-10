@@ -52,8 +52,9 @@ export function resolveStorage(configured?: RevnixStorage): {
     "[revnix] No `storage` adapter configured and no localStorage available — " +
       "the customer id lives in memory only. Every launch will look like a NEW " +
       "anonymous customer: prior purchases won't be attached and analytics " +
-      "would be inflated, so install reporting is disabled. Pass a persistent " +
-      "adapter (AsyncStorage/MMKV on React Native) to fix this."
+      "would be inflated, so install reporting and experiment enrollment are " +
+      "disabled. Pass a persistent adapter (AsyncStorage/MMKV on React " +
+      "Native) to fix this."
   );
   return { storage: memoryStorage(), persistent: false };
 }

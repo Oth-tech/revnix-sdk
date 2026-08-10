@@ -291,7 +291,12 @@ export interface PlacementResolution {
   placementMetadata?: Record<string, unknown>;
   offering: PlacementOffering | null;
   paywall: PlacementPaywall | null;
-  experiment: null;
+  /** REV-219: the A/B test serving this resolution — set when the customer
+   *  is enrolled in an experiment on this placement (the offering/paywall
+   *  above are the assigned variant's). Null when no experiment applies.
+   *  Assignment is sticky per customer, survives identity merges, and the
+   *  enrollment is recorded as an `experiment.enrolled` ledger event. */
+  experiment: { key: string; variantId: string } | null;
   /** REV-157 (SDK-populated): true when this was served from the local cache
    *  because the live read failed (offline / incident) — the paywall renders
    *  the last published resolution rather than not at all. false on a fresh
