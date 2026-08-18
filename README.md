@@ -93,6 +93,12 @@ await Revnix.client.getCustomerId();   // rvx_anon_… until identified
 await Revnix.client.logout();           // fresh anonymous customer
 
 // server-side only (secret rvx_sk_ key — throws locally on a publishable key):
+import { RevnixClient } from "revnix-react";
+
+const revnix = new RevnixClient({
+  apiKey: process.env.REVNIX_SECRET_KEY!,      // rvx_sk_…
+  baseUrl: "https://<deployment>.convex.site",
+});
 await revnix.identify(user.uid);        // on login — merges anonymous history
 ```
 
@@ -267,6 +273,58 @@ stays pulled.
 `getCachedPlacement(placementKey)` reads that cache with no network call, and
 `prefetchPlacements` (config) warms it at app start.
 
+## A/B tests
+
+`resolvePlacement` sends the current customer id, so a running A/B test on
+that placement serves this customer their assigned variant. The returned
+`offering` and `paywall` are **already the variant's** — render what you get.
+The assignment is exposed only so you can attribute your own analytics:
+
+```ts
+const { offering, paywall, experiment } = await Revnix.client.resolvePlacement(
+  "paywall_main"
+);
+if (experiment) {
+  analytics.track("paywall_shown", {
+    experiment: experiment.key,
+    variant: experiment.variantId,
+  });
+}
+```
+
+`experiment` is `null` when no running test covers the placement. Assignment
+is sticky per customer, survives `identify()` merges, and enrolls the
+customer exactly once — the server records an `experiment.enrolled` ledger
+event in the same transaction as the assignment.
+
+### Targeting: `setAttributes`
+
+A test can be narrowed to an *audience* — conditions over customer
+attributes. `setAttributes` is how a mobile app supplies the facts those
+conditions read:
+
+```ts
+await Revnix.client.setAttributes({
+  country: "US",
+  app_version: "4.2.0",
+  lifetime_orders: 3,
+  stale_key: null, // null deletes
+});
+```
+
+Unlike the fire-and-forget beacons this **awaits** the write, because the very
+next `resolvePlacement` may depend on it and silently racing the audience
+check would make targeting look broken. Set the attributes an audience targets
+*before* the first resolve on a covered placement: eligibility is evaluated at
+that resolve, and a customer described only afterwards enrolls on their next
+one.
+
+This is the one write under `/v1/customers/*` a publishable key may make. Two
+server rules bound it, and each rejects the whole batch rather than applying
+part of it: `email` and `username` are reserved (secret key, from your own
+backend), and an attribute your backend already set cannot be changed from a
+device.
+
 ## Diagnostics
 
 The SDK swallows failures it can recover from (retry-queue drains, placement
@@ -298,11 +356,20 @@ for status 0, 429, and 5xx):
 ## Rendering the paywall (React Native)
 
 `RevnixPaywall` renders a published paywall design exactly as the dashboard
-paywall builder previews it — template, accent color, hero image, badge,
-highlighted package, and feature list all come from the placement's
-`paywall.config`. The app supplies localized store prices (StoreKit / Play
-Billing) and the purchase handlers, so the display never disagrees with the
-charge.
+paywall builder previews it — layout, copy, accent color, hero image, badge,
+highlighted package, feature list, social proof, and offer framing all come
+from the placement's `paywall.config`. The app supplies localized store prices
+(StoreKit / Play Billing) and the purchase handlers, so the display never
+disagrees with the charge.
+
+`config.template` selects one of **nine layouts** — `focus`, `feature-list`,
+`minimal` (the three original templates, byte-identical to how they always
+rendered) plus `hero`, `timeline`, `plans`, `feature-grid`, `offer`, and
+`reveal`. The dashboard's 200-template gallery is presets over these nine, so
+a preset never introduces a shape this component cannot draw. Two optional
+blocks compose onto any layout: `config.review` (star rating, quote, author,
+and a `count` line under the CTA) and `config.offer` (struck-through anchor
+price on the highlighted package, urgency line above the CTA).
 
 ```tsx
 import { RevnixPaywall } from "revnix-react/ui";
@@ -349,6 +416,7 @@ load `react` / `react-native` (both are peer dependencies used only by `/ui`).
 | `resolvePlacement` | `GET /v1/placements/{key}/offering` | any |
 | install report | `POST /v1/installs` | any |
 | `logPaywallShown` | `POST /v1/paywalls/viewed` | any |
+| `setAttributes` | `POST /v1/customers/{id}/attributes` | any |
 | `identify` | `POST /v1/identify` | secret |
 | `alias` | `POST /v1/customers/{id}/alias` | secret |
 
