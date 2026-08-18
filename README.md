@@ -93,6 +93,12 @@ await Revnix.client.getCustomerId();   // rvx_anon_… until identified
 await Revnix.client.logout();           // fresh anonymous customer
 
 // server-side only (secret rvx_sk_ key — throws locally on a publishable key):
+import { RevnixClient } from "revnix-react";
+
+const revnix = new RevnixClient({
+  apiKey: process.env.REVNIX_SECRET_KEY!,      // rvx_sk_…
+  baseUrl: "https://<deployment>.convex.site",
+});
 await revnix.identify(user.uid);        // on login — merges anonymous history
 ```
 
