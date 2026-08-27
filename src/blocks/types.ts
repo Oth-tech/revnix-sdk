@@ -1,0 +1,232 @@
+// The paywall block model — a portable description of a designed paywall.
+//
+// A block paywall is a TREE of styled elements: the screen owns a background
+// and a list of blocks; every block carries its own style. The dashboard's
+// builder authors this tree and publishes it on the paywall config as
+// `blocks`, where it takes precedence over the classic `template` layouts.
+//
+// This file mirrors revnix-app's src/lib/paywall-blocks/types.ts one-for-one.
+// The two must stay in lockstep: the dashboard preview and this SDK renderer
+// are two interpreters of the SAME document, and a field only one side knows
+// is a design that ships looking different from the design that was approved.
+
+/** Per-block visual style. Everything optional — a block renders sensibly
+ *  with no style at all. Sizes are px numbers; colors are any CSS color, or
+ *  a palette token (see `resolveColor`). */
+import type { PaywallBackground } from "./background.js";
+
+export type {
+  BackgroundFit,
+  BackgroundImage,
+  BackgroundLayers,
+  BackgroundOverlay,
+  PaywallBackground,
+  PaywallBackgroundSpec,
+} from "./background.js";
+
+export interface BlockStyle {
+  fill?: string;
+  textColor?: string;
+  /** 0–100, like the dashboard's opacity inputs. */
+  opacity?: number;
+  borderColor?: string;
+  borderWidth?: number;
+  /** Per-side rules, as a CSS border shorthand ("1px solid @text/12"). */
+  borderTop?: string;
+  borderRight?: string;
+  borderBottom?: string;
+  borderLeft?: string;
+  radius?: number;
+  padding?: number;
+  paddingX?: number;
+  paddingY?: number;
+  /** Per-side padding wins over the shorthands above. */
+  paddingTop?: number;
+  paddingRight?: number;
+  paddingBottom?: number;
+  paddingLeft?: number;
+  margin?: number;
+  marginTop?: number;
+  marginRight?: number;
+  marginBottom?: number;
+  marginLeft?: number;
+  fontSize?: number;
+  fontWeight?: number;
+  /** A design font family name (e.g. "Newsreader"). Renders only when the
+   *  host app has that font registered — see `fontFamilyMap`. */
+  fontFamily?: string;
+  fontStyle?: "normal" | "italic";
+  align?: "left" | "center" | "right";
+  /** In em, like CSS. Converted to points against the block's font size. */
+  letterSpacing?: number;
+  /** Unitless multiplier, like CSS. Converted to points. */
+  lineHeight?: number;
+  textTransform?: "none" | "uppercase";
+  decoration?: "none" | "underline" | "line-through";
+  /** Line-breaking preference. No RN equivalent — ignored. */
+  textWrap?: "balance" | "pretty";
+  /** Keep the copy on one line. */
+  nowrap?: boolean;
+  /** Gap between a container's children. */
+  gap?: number;
+  height?: number;
+  minHeight?: number;
+  /** px number, or a percentage string ("50%"). */
+  width?: number | string;
+  maxWidth?: number | string;
+  /** Width-to-height ratio; "16/9" strings are parsed. */
+  aspectRatio?: number | string;
+  /** flex-grow inside a row/column container. */
+  flex?: number;
+  /** flex-shrink; 0 stops a row item from being squashed. */
+  shrink?: number;
+  /** Let a row wrap onto more lines. */
+  wrap?: boolean;
+  /** Main-axis distribution for row/column containers. */
+  justify?: "start" | "center" | "end" | "between";
+  /** Cross-axis alignment for row/column containers. */
+  items?: "start" | "center" | "end" | "baseline" | "stretch";
+  /** Raw CSS box-shadow. Approximated by a soft RN shadow. */
+  shadow?: string;
+  /** backdrop-filter blur radius in px (glass cards). RN has no backdrop
+   *  filter; the translucent `fill` carries the effect on its own. */
+  blur?: number;
+  /** Raw CSS filter. No RN equivalent — ignored. */
+  filter?: string;
+  rotate?: number;
+  /** Placement inside a `stack` container. `inset` fills the stack; the
+   *  individual offsets pin an edge. Ignored outside a stack. */
+  inset?: boolean;
+  top?: number;
+  right?: number;
+  bottom?: number;
+  left?: number;
+  zIndex?: number;
+  overflow?: "hidden" | "visible";
+}
+
+export interface TextBlock {
+  id: string;
+  type: "text";
+  text: string;
+  style?: BlockStyle;
+}
+
+export interface ImageBlock {
+  id: string;
+  type: "image";
+  /** Empty falls back to the config's hero image, then to a blank slot. */
+  url?: string;
+  shape?: "rect" | "circle";
+  fit?: "cover" | "contain";
+  placeholder?: string;
+  style?: BlockStyle;
+}
+
+export interface ListBlock {
+  id: string;
+  type: "list";
+  items: Array<{ icon?: string; title: string; description?: string }>;
+  /** Icon color; defaults to the screen accent. */
+  iconColor?: string;
+  style?: BlockStyle;
+}
+
+/** Renders the attached offering's packages as selectable cards. */
+export interface ProductsBlock {
+  id: string;
+  type: "products";
+  direction?: "column" | "row";
+  titleTpl?: string;
+  priceTpl?: string;
+  highlightSub?: string;
+  badgeText?: string;
+  cardStyle?: BlockStyle;
+  highlightStyle?: BlockStyle;
+  style?: BlockStyle;
+}
+
+export interface ButtonBlock {
+  id: string;
+  type: "button";
+  label: string;
+  style?: BlockStyle;
+}
+
+export interface LinksBlock {
+  id: string;
+  type: "links";
+  showRestore?: boolean;
+  showTerms?: boolean;
+  showPrivacy?: boolean;
+  termsUrl?: string;
+  privacyUrl?: string;
+  style?: BlockStyle;
+}
+
+export interface LineBlock {
+  id: string;
+  type: "line";
+  style?: BlockStyle;
+}
+
+export interface SpacerBlock {
+  id: string;
+  type: "spacer";
+  /** Grows to push what follows to the bottom. */
+  flex?: boolean;
+  style?: BlockStyle;
+}
+
+/** The one container block. `layout` picks how children are placed: column /
+ *  row are flex lines, `stack` layers them (children position with
+ *  style.inset or the edge offsets), and `grid` is an N-column grid. */
+export interface CardBlock {
+  id: string;
+  type: "card";
+  layout?: "column" | "row" | "stack" | "grid";
+  /** Renders this container once per package in the attached offering. Its
+   *  subtree reads the package through tag variables. */
+  repeat?: "packages";
+  /** Merged over `style` on the package the customer has selected. */
+  selectedStyle?: BlockStyle;
+  /** "This card describes package N of the offering". A card whose index the
+   *  offering does not reach is hidden. */
+  packageIndex?: number;
+  /** grid only; defaults to 2. */
+  columns?: number;
+  /** grid only — a CSS track list ("1fr 60px 66px"). */
+  gridColumns?: string;
+  children: PaywallBlock[];
+  style?: BlockStyle;
+}
+
+export type PaywallBlock =
+  | TextBlock
+  | ImageBlock
+  | ListBlock
+  | ProductsBlock
+  | ButtonBlock
+  | LinksBlock
+  | LineBlock
+  | SpacerBlock
+  | CardBlock;
+
+/** The published document: screen palette plus the block tree. */
+export interface PaywallBlockDoc {
+  version: number;
+  /** "canvas" designs are authored against a fixed device screen and scale as
+   *  a whole; "flow" designs lay out in a scrolling column. */
+  layout?: "canvas" | "flow";
+  /** Any CSS color or gradient string — or the layered form with a photo
+   *  and scrim (see ./background.ts). */
+  background: PaywallBackground;
+  textColor: string;
+  accent: string;
+  accentInk: string;
+  fontFamily?: string;
+  blocks: PaywallBlock[];
+}
+
+/** The device screen `canvas` designs are authored against. */
+export const DESIGN_CANVAS = { width: 393, height: 852 } as const;

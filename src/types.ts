@@ -276,6 +276,13 @@ export interface PaywallConfig {
     termsUrl?: string;
     privacyUrl?: string;
   };
+  /** A designed paywall: the block tree the dashboard's builder authored.
+   *  When present RevnixPaywall renders THIS and the fields above act as the
+   *  fallback for clients that predate block rendering — so an older app
+   *  keeps showing a sane classic screen instead of nothing. Typed as the
+   *  block document in "revnix-react/ui"; the core entrypoint keeps it opaque
+   *  so non-UI consumers pull in no renderer types. */
+  blocks?: unknown;
 }
 
 export interface PlacementPaywall {
