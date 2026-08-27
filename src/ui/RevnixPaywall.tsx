@@ -30,12 +30,48 @@ import {
 } from "react-native";
 
 import type { PaywallConfig } from "../types.js";
+import type { PaywallBlockDoc } from "../blocks/types.js";
+import type { FontFamilyMap } from "../blocks/style.js";
+import {
+  RevnixBlockPaywall,
+  type RevnixBlurComponent,
+  type RevnixGradientComponent,
+} from "./RevnixBlockPaywall.js";
+
+/** `config.blocks` is opaque on the core config (the non-UI entrypoint must
+ *  not carry renderer types), and it arrives straight off the wire — so it is
+ *  checked here rather than trusted. A malformed doc falls through to the
+ *  classic layouts instead of rendering a broken screen. */
+function asBlockDoc(value: unknown): PaywallBlockDoc | null {
+  if (typeof value !== "object" || value === null) return null;
+  const doc = value as Partial<PaywallBlockDoc>;
+  return Array.isArray(doc.blocks) &&
+    // A background is the legacy CSS string OR the layered spec (ground /
+    // photo / scrim). Both are valid documents; only a missing or wrongly
+    // typed one falls through to the classic layouts.
+    (typeof doc.background === "string" ||
+      (typeof doc.background === "object" && doc.background !== null)) &&
+    typeof doc.textColor === "string" &&
+    typeof doc.accent === "string" &&
+    typeof doc.accentInk === "string"
+    ? (doc as PaywallBlockDoc)
+    : null;
+}
 
 /** One purchasable row. `priceLabel` must come from the store (localized). */
 export interface RevnixPaywallPackage {
   packageId: string;
   title: string;
   priceLabel: string;
+  /** Renewal cycle ("monthly", "annual", …) from the catalog product. Only
+   *  designed (block) paywalls read it, to resolve the {period},
+   *  {period_short}, {price_per_month} and {save_percent} tags — a tag with
+   *  no cycle behind it renders as written rather than guessed. */
+  period?: string;
+  /** Price in minor units, for the same per-month and saving maths. */
+  amountMinor?: number;
+  /** ISO currency of `amountMinor`. */
+  currency?: string;
 }
 
 /** Colors the paywall renders with. Defaults mirror the dashboard preview
@@ -106,11 +142,24 @@ export interface RevnixPaywallProps {
   paywallId?: string;
   /** Opt out of the automatic view report while still passing `client`. */
   disableViewTracking?: boolean;
+  /** Renders the CSS gradients a designed (block) paywall may use. Pass the
+   *  app's own `LinearGradient` (expo-linear-gradient or
+   *  react-native-linear-gradient). Without it a gradient paints as the
+   *  design's ground color. Ignored by the classic layouts. */
+  gradient?: RevnixGradientComponent;
+  /** Renders a blurred background photo on a designed paywall. RN has no
+   *  blur primitive, so pass the app's own (`expo-blur`'s `BlurView`, or
+   *  `@react-native-community/blur`). Without it a blurred background photo
+   *  renders sharp. Ignored by the classic layouts. */
+  blur?: RevnixBlurComponent;
+  /** Design font family → the face(s) the app has registered, for designed
+   *  paywalls. Either one family for every weight, or a weight → family table.
+   *  RN cannot load a font by name at runtime, so an unmapped face renders in
+   *  the system font. */
+  fontFamilyMap?: FontFamilyMap;
 }
 
 export function RevnixPaywall(props: RevnixPaywallProps) {
-  const { config, packages, loading } = props;
-
   // One view per mount: remounting (a re-shown paywall) is a genuine new
   // display; re-renders are not.
   const { client, placementKey, paywallId, disableViewTracking } = props;
@@ -119,6 +168,46 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
     client.logPaywallShown({ placementKey, paywallId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A designed paywall wins over the classic layouts — same precedence the
+  // dashboard preview applies, so what was approved is what ships. The view
+  // report above still runs, so analytics does not care which renderer won.
+  //
+  // Each renderer is its OWN component, so this switch mounts and unmounts
+  // rather than changing one component's hook count: a paywall whose config
+  // arrives after a placeholder (or is swapped by an A/B assignment) would
+  // otherwise crash on "rendered more hooks than during the previous render".
+  const { config } = props;
+  const blocks = asBlockDoc(config.blocks);
+  if (blocks) {
+    return (
+      <RevnixBlockPaywall
+        doc={blocks}
+        packages={props.packages}
+        onPurchase={props.onPurchase}
+        selectedPackageId={props.selectedPackageId}
+        onSelectPackage={props.onSelectPackage}
+        highlightPackageId={config.highlightPackageId}
+        heroImageUrl={config.heroImageUrl}
+        onRestore={props.onRestore}
+        onTerms={props.onTerms}
+        onPrivacy={props.onPrivacy}
+        footer={config.footer}
+        gradient={props.gradient}
+        blur={props.blur}
+        fontFamilyMap={props.fontFamilyMap}
+        style={props.style}
+        loading={props.loading}
+      />
+    );
+  }
+  return <ClassicPaywall {...props} />;
+}
+
+/** The nine `template` layouts — every paywall published before the block
+ *  builder, and the fallback for any config that carries no block tree. */
+function ClassicPaywall(props: RevnixPaywallProps) {
+  const { config, packages, loading } = props;
   // Base scheme comes from the dashboard config (mode: dark|light, absent =
   // dark for legacy configs); the host app's explicit theme prop wins on top.
   const baseTheme =

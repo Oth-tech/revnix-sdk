@@ -1,6 +1,6 @@
 {
   "name": "revnix-react",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Revnix SDK for React, React Native & Next.js — purchase registration, entitlements, identity, and placements over the Revnix /v1 API.",
   "license": "MIT",
   "keywords": [
