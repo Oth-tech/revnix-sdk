@@ -197,13 +197,62 @@ describe("style mapping", () => {
   });
 
   test("properties RN cannot express are dropped, not faked", () => {
-    const style = toViewStyle({ blur: 14, filter: "blur(2px)" }, ctx) as Record<
-      string,
-      unknown
-    >;
+    const style = toViewStyle(
+      {
+        blur: 14,
+        filter: "blur(2px)",
+        fillSize: "24px 24px",
+        clipPath: "polygon(50% 0,100% 100%,0 100%)",
+      },
+      ctx,
+    ) as Record<string, unknown>;
     expect(style.blur).toBeUndefined();
     expect(style.filter).toBeUndefined();
     expect(style.backdropFilter).toBeUndefined();
+    expect(style.backgroundSize).toBeUndefined();
+    expect(style.clipPath).toBeUndefined();
+  });
+
+  // The converted designs size carousel cards and side rails with
+  // `flex: 0 0 250px`; without a basis they collapse to nothing on device.
+  test("flex basis and self-alignment survive the trip", () => {
+    const style = toViewStyle(
+      { flex: 0, shrink: 0, basis: 250, selfAlign: "start" },
+      ctx,
+    );
+    expect(style.flexBasis).toBe(250);
+    expect(style.flexGrow).toBe(0);
+    expect(style.flexShrink).toBe(0);
+    expect(style.alignSelf).toBe("flex-start");
+  });
+
+  test("proportional sizes and auto margins pass through as RN accepts them", () => {
+    const style = toViewStyle(
+      { height: "78%", top: "50%", marginTop: "auto", marginLeft: 12 },
+      ctx,
+    );
+    expect(style.height).toBe("78%");
+    expect(style.top).toBe("50%");
+    expect(style.marginTop).toBe("auto");
+    expect(style.marginLeft).toBe(12);
+  });
+
+  test("a px translate applies; a percentage one is dropped, never guessed", () => {
+    // RN transforms take points. A badge centred with left:50% +
+    // translate:"-50% 0" cannot be corrected here, so the percentage is
+    // dropped rather than approximated at some arbitrary width.
+    expect(toViewStyle({ translate: "-8px 4px" }, ctx).transform).toEqual([
+      { translateX: -8 },
+      { translateY: 4 },
+    ]);
+    expect(toViewStyle({ translate: "-50% 0" }, ctx).transform).toBeUndefined();
+    expect(toViewStyle({ translate: "-50% -50%" }, ctx).transform).toBeUndefined();
+  });
+
+  test("rotate and translate compose into one transform list", () => {
+    expect(
+      toViewStyle({ rotate: 45, translate: "0 -8px" }, ctx).transform,
+    ).toEqual([{ rotate: "45deg" }, { translateY: -8 }]);
   });
 
   test("CSS text units convert to points against the block's own size", () => {

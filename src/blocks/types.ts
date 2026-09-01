@@ -26,6 +26,10 @@ export type {
 
 export interface BlockStyle {
   fill?: string;
+  /** Sizing for an image or repeating-gradient `fill` (CSS background-size).
+   *  RN paints `fill` as a flat colour, so tiled washes do not survive the
+   *  trip and this is ignored. */
+  fillSize?: string;
   textColor?: string;
   /** 0–100, like the dashboard's opacity inputs. */
   opacity?: number;
@@ -45,11 +49,12 @@ export interface BlockStyle {
   paddingRight?: number;
   paddingBottom?: number;
   paddingLeft?: number;
+  /** px numbers, or "auto" — the designs centre and bottom-pin with it. */
   margin?: number;
-  marginTop?: number;
-  marginRight?: number;
-  marginBottom?: number;
-  marginLeft?: number;
+  marginTop?: number | "auto";
+  marginRight?: number | "auto";
+  marginBottom?: number | "auto";
+  marginLeft?: number | "auto";
   fontSize?: number;
   fontWeight?: number;
   /** A design font family name (e.g. "Newsreader"). Renders only when the
@@ -69,7 +74,8 @@ export interface BlockStyle {
   nowrap?: boolean;
   /** Gap between a container's children. */
   gap?: number;
-  height?: number;
+  /** px number, or a percentage string ("78%") for proportional boxes. */
+  height?: number | string;
   minHeight?: number;
   /** px number, or a percentage string ("50%"). */
   width?: number | string;
@@ -80,12 +86,18 @@ export interface BlockStyle {
   flex?: number;
   /** flex-shrink; 0 stops a row item from being squashed. */
   shrink?: number;
+  /** flex-basis in px — carousel cards and side rails are sized by basis,
+   *  and collapse to nothing without it. */
+  basis?: number;
   /** Let a row wrap onto more lines. */
   wrap?: boolean;
   /** Main-axis distribution for row/column containers. */
   justify?: "start" | "center" | "end" | "between";
   /** Cross-axis alignment for row/column containers. */
   items?: "start" | "center" | "end" | "baseline" | "stretch";
+  /** Cross-axis alignment for THIS block, overriding the container's
+   *  `items` — how a design opts one chip out of a stretched row. */
+  selfAlign?: "start" | "center" | "end" | "baseline" | "stretch";
   /** Raw CSS box-shadow. Approximated by a soft RN shadow. */
   shadow?: string;
   /** backdrop-filter blur radius in px (glass cards). RN has no backdrop
@@ -93,14 +105,22 @@ export interface BlockStyle {
   blur?: number;
   /** Raw CSS filter. No RN equivalent — ignored. */
   filter?: string;
+  /** Raw CSS clip-path (starbursts, ticket notches). No RN equivalent —
+   *  ignored, so the shape renders as its uncut box. */
+  clipPath?: string;
   rotate?: number;
+  /** CSS `translate` ("-50% 0"), which the designs pair with a 50% offset to
+   *  centre a pinned badge. RN transforms take points, not percentages, so a
+   *  percentage translate is ignored; a px one is applied. */
+  translate?: string;
   /** Placement inside a `stack` container. `inset` fills the stack; the
    *  individual offsets pin an edge. Ignored outside a stack. */
   inset?: boolean;
-  top?: number;
-  right?: number;
-  bottom?: number;
-  left?: number;
+  /** px numbers, or percentage strings ("50%") for proportional pinning. */
+  top?: number | string;
+  right?: number | string;
+  bottom?: number | string;
+  left?: number | string;
   zIndex?: number;
   overflow?: "hidden" | "visible";
 }
