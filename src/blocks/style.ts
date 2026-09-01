@@ -9,6 +9,13 @@
 //                   card already carries reads as frosted on its own.
 //   filter          no equivalent; ignored.
 //   textWrap        no equivalent (RN breaks lines its own way); ignored.
+//   fillSize        RN paints `fill` as a flat colour, so a tiled wash has
+//                   no size to honour; ignored.
+//   clipPath        no equivalent; the shape renders as its uncut box.
+//   % translate     RN transforms are points, not percentages. A percentage
+//                   translate is ignored (a px one is applied), so a badge
+//                   centred by `left:50%` + `translate:"-50% 0"` sits a half
+//                   width to the right of where the web shows it.
 //
 // Two CSS units need converting rather than copying: `letterSpacing` is em in
 // the document and points in RN, and `lineHeight` is a unitless multiplier in
@@ -235,7 +242,7 @@ export function toViewStyle(
   if (s.marginBottom !== undefined) out.marginBottom = s.marginBottom;
   if (s.marginLeft !== undefined) out.marginLeft = s.marginLeft;
   if (s.gap !== undefined) out.gap = s.gap;
-  if (s.height !== undefined) out.height = s.height;
+  if (s.height !== undefined) out.height = s.height as ViewStyle["height"];
   if (s.minHeight !== undefined) out.minHeight = s.minHeight;
   if (s.width !== undefined) out.width = s.width as ViewStyle["width"];
   if (s.maxWidth !== undefined) out.maxWidth = s.maxWidth as ViewStyle["maxWidth"];
@@ -245,11 +252,39 @@ export function toViewStyle(
   }
   if (s.flex !== undefined) out.flexGrow = s.flex;
   if (s.shrink !== undefined) out.flexShrink = s.shrink;
+  if (s.basis !== undefined) out.flexBasis = s.basis;
   if (s.wrap) out.flexWrap = "wrap";
   if (s.justify !== undefined) out.justifyContent = JUSTIFY[s.justify];
   if (s.items !== undefined) out.alignItems = ITEMS[s.items];
+  if (s.selfAlign !== undefined) out.alignSelf = ITEMS[s.selfAlign];
   if (s.shadow !== undefined) Object.assign(out, parseShadow(s.shadow, doc));
-  if (s.rotate !== undefined) out.transform = [{ rotate: `${s.rotate}deg` }];
+  // RN types the prop as a readonly array OR a raw CSS string, so the element
+  // type is taken from the array arm and built up mutably before assignment.
+  type Transform = Exclude<
+    NonNullable<ViewStyle["transform"]>,
+    string
+  >[number];
+  const transform: Transform[] = [];
+  if (s.rotate !== undefined) transform.push({ rotate: `${s.rotate}deg` });
+  if (s.translate !== undefined) {
+    // Percentages have no RN equivalent and are dropped rather than guessed
+    // at; a px pair translates directly.
+    const [x, y] = s.translate.trim().split(/\s+/);
+    const px = (v: string | undefined) => {
+      if (!v) return 0;
+      const n = Number(v.endsWith("px") ? v.slice(0, -2) : v);
+      return Number.isFinite(n) ? n : 0;
+    };
+    // A zero component is a no-op; leaving it out keeps the list to the
+    // moves the design actually makes.
+    if (x !== undefined && !x.endsWith("%") && px(x) !== 0) {
+      transform.push({ translateX: px(x) });
+    }
+    if (y !== undefined && !y.endsWith("%") && px(y) !== 0) {
+      transform.push({ translateY: px(y) });
+    }
+  }
+  if (transform.length) out.transform = transform;
   if (s.zIndex !== undefined) out.zIndex = s.zIndex;
   if (s.overflow !== undefined) out.overflow = s.overflow;
   // Stack placement: `inset` fills the parent, individual offsets pin edges.
@@ -267,10 +302,10 @@ export function toViewStyle(
     s.left !== undefined
   ) {
     out.position = "absolute";
-    if (s.top !== undefined) out.top = s.top;
-    if (s.right !== undefined) out.right = s.right;
-    if (s.bottom !== undefined) out.bottom = s.bottom;
-    if (s.left !== undefined) out.left = s.left;
+    if (s.top !== undefined) out.top = s.top as ViewStyle["top"];
+    if (s.right !== undefined) out.right = s.right as ViewStyle["right"];
+    if (s.bottom !== undefined) out.bottom = s.bottom as ViewStyle["bottom"];
+    if (s.left !== undefined) out.left = s.left as ViewStyle["left"];
   }
   return out;
 }
