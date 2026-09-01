@@ -6,6 +6,9 @@ import {
 } from "./background.js";
 import { resolveColor } from "./color.js";
 import type { PaywallBlockDoc } from "./types.js";
+import type { PaywallBackground } from "./background.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 // The SDK is the second interpreter of a document the dashboard authored, so
 // these mirror revnix-app/tests/paywall-backgrounds/background.test.ts case
@@ -172,5 +175,43 @@ describe("coverPlacement — the stand-in for CSS object-position", () => {
       left: 0,
       top: 0,
     });
+  });
+});
+
+// ——— the cross-repo wire contract ———
+//
+// This SDK reads the ground under `color` and always has. The five native SDKs
+// read `ground` — the name of the RESOLVED layer, a key the dashboard has
+// never written — so every paywall whose background had been edited rendered
+// pure black on iOS, Android, Flutter, Unity and Capacitor while looking
+// correct here.
+//
+// `paywall-background-wire.json` is a real document the dashboard published
+// from its background library, and a byte-identical copy of it now lives in
+// each of the other five repos' suites. This is the reference case they are
+// all measured against.
+
+describe("published wire contract", () => {
+  const golden = JSON.parse(
+    readFileSync(join(__dirname, "paywall-background-wire.json"), "utf8"),
+  ) as { background: PaywallBackground };
+
+  const GOLDEN_GROUND =
+    "radial-gradient(120% 85% at 50% 0%, #D6FF3F38 0%, #D6FF3F00 58%), " +
+    "linear-gradient(180deg, #111820 0%, #07090C 100%)";
+
+  test("a real published document resolves to its gradient ground, not black", () => {
+    expect(backgroundLayers(golden.background).ground).toBe(GOLDEN_GROUND);
+    expect(backgroundLayers(golden.background).ground).not.toBe("#000000");
+  });
+
+  test("the ground key is `color`", () => {
+    expect(backgroundLayers({ color: "#0B0D10" }).ground).toBe("#0B0D10");
+    expect(backgroundBaseColor({ color: "#0B0D10" })).toBe("#0B0D10");
+  });
+
+  test("a background with no ground at all falls back to black, and only then", () => {
+    expect(backgroundBaseColor({ image: { url: "https://x/y.jpg" } })).toBe("#000000");
+    expect(backgroundBaseColor(undefined)).toBe("#000000");
   });
 });
