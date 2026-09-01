@@ -582,11 +582,17 @@ export class RevnixClient {
    *  is one view (retries of the same display are deduped by viewId).
    *  RevnixPaywall calls this automatically when given a `client`; headless
    *  paywall UIs call it on their own show event. Powers the analytics
-   *  funnel's "Paywall displayed" stage and View → Trial/Paid conversions. */
+   *  funnel's "Paywall displayed" stage and View → Trial/Paid conversions.
+   *
+   *  Returns the view id it generated (REV-252). Hold onto it and hand it to
+   *  logPaywallClosed when the customer dismisses this display: the pair
+   *  sharing one id is what lets the ledger tie a close to the display it
+   *  ended, rather than guessing from timestamps. Ignoring the return value
+   *  is still valid — it stays a fire-and-forget beacon. */
   logPaywallShown(options?: {
     placementKey?: string;
     paywallId?: string;
-  }): void {
+  }): string {
     const viewId = generateViewId();
     void this.customerIdPromise
       .then((customerId) =>
@@ -600,6 +606,34 @@ export class RevnixClient {
         })
       )
       .catch((err) => this.diag("logPaywallShown", err));
+    return viewId;
+  }
+
+  /** Report that the customer dismissed a paywall (REV-252) — the other half
+   *  of a display's life. Fire-and-forget and idempotent per view id, exactly
+   *  like logPaywallShown.
+   *
+   *  Pass the id that logPaywallShown returned for THIS display. The two
+   *  events then share a view id, so a reader can pair them, and the gap
+   *  between their timestamps is the customer's dwell on the screen. Calling
+   *  it with a fresh id still records a dismissal; it just cannot be tied
+   *  back to the display it ended. RevnixPaywall does all of this for you. */
+  logPaywallClosed(
+    viewId: string,
+    options?: { placementKey?: string; paywallId?: string }
+  ): void {
+    void this.customerIdPromise
+      .then((customerId) =>
+        this.request("POST", "/v1/paywalls/closed", {
+          customerId,
+          viewId,
+          occurredAt: Date.now(),
+          sdkVersion: SDK_VERSION,
+          ...(options?.placementKey ? { placementKey: options.placementKey } : {}),
+          ...(options?.paywallId ? { paywallId: options.paywallId } : {}),
+        })
+      )
+      .catch((err) => this.diag("logPaywallClosed", err));
   }
 
   /** Set attributes on the current customer (REV-033 v2). Attributes are what

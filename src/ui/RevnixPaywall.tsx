@@ -32,6 +32,7 @@ import {
 import type { PaywallConfig } from "../types.js";
 import type { PaywallBlockDoc } from "../blocks/types.js";
 import type { FontFamilyMap } from "../blocks/style.js";
+import { withAlpha } from "../blocks/color.js";
 import {
   RevnixBlockPaywall,
   type RevnixBlurComponent,
@@ -131,12 +132,34 @@ export interface RevnixPaywallProps {
   onRestore?: () => void;
   onTerms?: () => void;
   onPrivacy?: () => void;
+  /** Called when the customer dismisses the paywall (REV-252) — either by
+   *  tapping an element the design marks as the close, or by the close button
+   *  the renderer supplies when the design authors none.
+   *
+   *  Dismissal is the HOST's to perform: the paywall does not unmount itself,
+   *  because only the host knows whether that means popping a screen, closing
+   *  a modal, or advancing onboarding. Omit it and no close is drawn at all —
+   *  a paywall with a dead close button is worse than one without.
+   *
+   *  Passing `client` as well reports `paywall.closed` against this display's
+   *  own view id, so the close pairs with its paywall.viewed. */
+  onClose?: () => void;
   theme?: Partial<RevnixPaywallTheme>;
   style?: StyleProp<ViewStyle>;
   /** When given, the paywall reports one paywall.viewed per mount (REV-094)
    *  — the analytics funnel's "Paywall displayed" stage. Structural typing
    *  keeps this entrypoint free of a hard client import. */
-  client?: { logPaywallShown: (options?: { placementKey?: string; paywallId?: string }) => void };
+  client?: {
+    logPaywallShown: (options?: {
+      placementKey?: string;
+      paywallId?: string;
+    }) => string | void;
+    /** Older clients predate close reporting; the paywall still closes. */
+    logPaywallClosed?: (
+      viewId: string,
+      options?: { placementKey?: string; paywallId?: string }
+    ) => void;
+  };
   /** Placement/paywall attribution attached to the view report. */
   placementKey?: string;
   paywallId?: string;
@@ -163,11 +186,38 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
   // One view per mount: remounting (a re-shown paywall) is a genuine new
   // display; re-renders are not.
   const { client, placementKey, paywallId, disableViewTracking } = props;
+  // Held in a ref, not state: the close report reads it, and re-rendering the
+  // paywall the instant its view is recorded would be a pointless frame.
+  const viewIdRef = React.useRef<string | undefined>(undefined);
   React.useEffect(() => {
     if (!client || disableViewTracking) return;
-    client.logPaywallShown({ placementKey, paywallId });
+    const id = client.logPaywallShown({ placementKey, paywallId });
+    // Pre-REV-252 clients return void; the close then still fires the host
+    // callback, it just cannot be paired with this display.
+    if (typeof id === "string") viewIdRef.current = id;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The host's dismissal runs whatever happens to the beacon — an analytics
+  // failure must never trap the customer on the screen (REV-252).
+  const { onClose } = props;
+  const handleClose = React.useMemo(
+    () =>
+      onClose
+        ? () => {
+            const viewId = viewIdRef.current;
+            if (client?.logPaywallClosed && viewId && !disableViewTracking) {
+              try {
+                client.logPaywallClosed(viewId, { placementKey, paywallId });
+              } catch {
+                // Reporting is best-effort; dismissal is not.
+              }
+            }
+            onClose();
+          }
+        : undefined,
+    [onClose, client, placementKey, paywallId, disableViewTracking]
+  );
 
   // A designed paywall wins over the classic layouts — same precedence the
   // dashboard preview applies, so what was approved is what ships. The view
@@ -192,6 +242,7 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
         onRestore={props.onRestore}
         onTerms={props.onTerms}
         onPrivacy={props.onPrivacy}
+        onClose={handleClose}
         footer={config.footer}
         gradient={props.gradient}
         blur={props.blur}
@@ -201,7 +252,50 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
       />
     );
   }
-  return <ClassicPaywall {...props} />;
+  return <ClassicPaywall {...props} onClose={handleClose} />;
+}
+
+/** The dismiss affordance the classic layouts get (REV-252).
+ *
+ *  The nine `template` layouts have the same problem the designed ones had —
+ *  nothing on the screen closes them — and `onClose` is a prop of the shared
+ *  RevnixPaywall, so a host that wires it must get a close on either path
+ *  rather than silently nothing. Classic layouts author no elements of their
+ *  own, so there is never a design chip to suppress: the rule reduces to
+ *  "draw it whenever the host wired a handler".
+ *
+ *  Tinted from the theme's own ink so it works in the light scheme too. */
+function ClassicClose({
+  theme,
+  onPress,
+}: {
+  theme: RevnixPaywallTheme;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Close"
+      hitSlop={10}
+      onPress={onPress}
+      style={{
+        position: "absolute",
+        top: 14,
+        right: 14,
+        zIndex: 50,
+        width: 30,
+        height: 30,
+        borderRadius: 15,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: withAlpha(theme.textPrimary, 0.14),
+      }}
+    >
+      <Text style={{ color: theme.textPrimary, fontSize: 17, lineHeight: 20 }}>
+        ×
+      </Text>
+    </Pressable>
+  );
 }
 
 /** The nine `template` layouts — every paywall published before the block
@@ -912,6 +1006,9 @@ function ClassicPaywall(props: RevnixPaywallProps) {
       >
         <View style={styles.content}>{body}</View>
       </ScrollView>
+      {props.onClose ? (
+        <ClassicClose theme={theme} onPress={props.onClose} />
+      ) : null}
     </View>
   );
 }
