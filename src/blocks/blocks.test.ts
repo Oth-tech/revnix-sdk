@@ -15,7 +15,8 @@ import {
   toViewStyle,
 } from "./style.js";
 import { resolveTags } from "./tags.js";
-import type { PaywallBlockDoc } from "./types.js";
+import { hasCloseAction } from "./types.js";
+import type { PaywallBlock, PaywallBlockDoc, TextBlock } from "./types.js";
 import type { RevnixPaywallPackage } from "../ui/RevnixPaywall.js";
 
 // Designed paywalls: the SDK is the second interpreter of a document the
@@ -432,5 +433,90 @@ describe("tag variables", () => {
   test("copy with no packages behind it renders as written", () => {
     expect(resolveTags("{price}", undefined, [])).toBe("{price}");
     expect(resolveTags("No tags here", monthly, all)).toBe("No tags here");
+  });
+});
+
+// REV-252: the close-suppression predicate. Hand-ported into all six SDK
+// renderers, so this is the reference behaviour they are each written
+// against — a drift here is a paywall that shows two close buttons, or none.
+describe("hasCloseAction", () => {
+  const text = (over: Partial<TextBlock> = {}): PaywallBlock => ({
+    id: "t",
+    type: "text",
+    text: "Go Pro",
+    ...over,
+  });
+
+  test("a design that marks nothing authors no close", () => {
+    // Every paywall published before REV-252 looks like this, which is why
+    // the renderer has to supply a close for it.
+    expect(hasCloseAction([])).toBe(false);
+    expect(hasCloseAction([text()])).toBe(false);
+  });
+
+  test("text, image and button blocks can each be the close", () => {
+    expect(hasCloseAction([text({ action: "close" })])).toBe(true);
+    expect(hasCloseAction([{ id: "i", type: "image", action: "close" }])).toBe(true);
+    expect(
+      hasCloseAction([{ id: "b", type: "button", label: "Not now", action: "close" }])
+    ).toBe(true);
+  });
+
+  test("it descends into cards, at any depth", () => {
+    // Converted designs pin their × inside a stack container; a shallow check
+    // would miss it and draw a second close on top of the design's own.
+    expect(
+      hasCloseAction([
+        {
+          id: "outer",
+          type: "card",
+          layout: "stack",
+          children: [
+            text(),
+            {
+              id: "inner",
+              type: "card",
+              children: [text({ id: "x", text: "×", action: "close" })],
+            },
+          ],
+        },
+      ])
+    ).toBe(true);
+  });
+
+  test("a close inside a conditional card does not count", () => {
+    // A `repeat` card renders once per package (none, on an empty offering)
+    // and a `packageIndex` card is hidden when the offering does not reach
+    // that index — so a close inside one MIGHT not render. Counting it would
+    // suppress the fallback and leave the customer with no way out, the exact
+    // bug this feature exists to fix.
+    const close = text({ id: "x", text: "×", action: "close" });
+    expect(
+      hasCloseAction([{ id: "c", type: "card", repeat: "packages", children: [close] }])
+    ).toBe(false);
+    expect(
+      hasCloseAction([{ id: "c", type: "card", packageIndex: 2, children: [close] }])
+    ).toBe(false);
+    // A plain card is unconditional, so its close does count.
+    expect(hasCloseAction([{ id: "c", type: "card", children: [close] }])).toBe(true);
+  });
+
+  test("a block type that cannot carry an action never counts", () => {
+    // `action` is only meaningful on text/image/button. A products or links
+    // block with a stray field on the wire must not suppress the fallback.
+    expect(
+      hasCloseAction([
+        { id: "p", type: "products" } as PaywallBlock,
+        { id: "l", type: "links" } as PaywallBlock,
+        { id: "s", type: "spacer" } as PaywallBlock,
+      ])
+    ).toBe(false);
+  });
+
+  test("an unknown action value leaves the block decorative", () => {
+    // Forward compatibility runs both ways: a future action this SDK does not
+    // know must not be mistaken for a close.
+    const future = { id: "t", type: "text", text: "?", action: "purchase" } as unknown as PaywallBlock;
+    expect(hasCloseAction([future])).toBe(false);
   });
 });

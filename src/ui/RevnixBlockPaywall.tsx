@@ -58,6 +58,7 @@ import {
 import { resolveTags } from "../blocks/tags.js";
 import {
   DESIGN_CANVAS,
+  hasCloseAction,
   type BlockStyle,
   type PaywallBlock,
   type PaywallBlockDoc,
@@ -112,6 +113,10 @@ export interface RevnixBlockPaywallProps {
   onRestore?: () => void;
   onTerms?: () => void;
   onPrivacy?: () => void;
+  /** Dismissal (REV-252). Omitted means no close is drawn at all — a dead
+   *  close button is worse than none. The host performs the dismissal; the
+   *  paywall never unmounts itself. */
+  onClose?: () => void;
   /** Paywall-level Terms/Privacy, used when a links block sets none. */
   footer?: { termsUrl?: string; privacyUrl?: string };
   /** Renders CSS gradients. Without it, gradients paint as a solid ground. */
@@ -459,6 +464,50 @@ function CardBox({
   );
 }
 
+/** The dismiss affordance the renderer supplies itself (REV-252).
+ *
+ *  Drawn only when the design authors none of its own and the host wired an
+ *  onClose — which is what makes every paywall published before close existed
+ *  dismissible without being re-authored, while a design that DOES carry a
+ *  close chip never ends up showing two.
+ *
+ *  Deliberately plain: it is a safety net, not a design element. It is tinted
+ *  from the screen's own ink rather than a fixed white so it stays legible on
+ *  a light design as well as a dark one, and it sits outside the canvas
+ *  transform so it is never scaled away on a small screen. */
+function FallbackClose({
+  doc,
+  onPress,
+}: {
+  doc: PaywallBlockDoc;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Close"
+      hitSlop={10}
+      onPress={onPress}
+      style={{
+        position: "absolute",
+        top: 14,
+        right: 14,
+        zIndex: 50,
+        width: 30,
+        height: 30,
+        borderRadius: 15,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: withAlpha(doc.textColor, 0.14),
+      }}
+    >
+      <Text style={{ color: doc.textColor, fontSize: 17, lineHeight: 20 }}>
+        ×
+      </Text>
+    </Pressable>
+  );
+}
+
 interface RenderContext {
   doc: PaywallBlockDoc;
   packages: RevnixPaywallPackage[];
@@ -468,6 +517,7 @@ interface RenderContext {
   onRestore?: () => void;
   onTerms?: () => void;
   onPrivacy?: () => void;
+  onClose?: () => void;
   footer?: { termsUrl?: string; privacyUrl?: string };
   heroImageUrl?: string;
   gradient?: RevnixGradientComponent;
@@ -482,27 +532,57 @@ function BlockText({
   style,
   ctx,
   inherited,
+  onPress,
 }: {
   text: string;
   style: BlockStyle | undefined;
   ctx: RenderContext;
   inherited: InheritedText;
+  /** Set when the design marks this element as the close (REV-252). */
+  onPress?: () => void;
 }) {
   const styleCtx = { ...ctx.style, fontSize: inherited.fontSize };
   // The block's own typography is folded into the inherited set first, so
   // em letter-spacing and unitless line-height resolve against whichever font
   // size actually applies — the block's, or the one it inherited.
   const own = inherit(inherited, style, styleCtx);
-  return (
-    <View style={toViewStyle(style, styleCtx)}>
-      <Text
-        numberOfLines={style?.nowrap ? 1 : undefined}
-        style={[inheritedTextStyle(own, ctx.style), textOnly(style, styleCtx)]}
-      >
-        {text}
-      </Text>
-    </View>
+  const body = (
+    <Text
+      numberOfLines={style?.nowrap ? 1 : undefined}
+      style={[inheritedTextStyle(own, ctx.style), textOnly(style, styleCtx)]}
+    >
+      {text}
+    </Text>
   );
+  // The whole box is the target, not just the glyph: a close chip is mostly
+  // padding, and a 12pt × is under the 44pt tap minimum on its own. The style
+  // lands on the Pressable itself for the same reason CardBox does it —
+  // wrapping a styled View would leave a pinned chip resolving its offsets
+  // against a zero-sized parent.
+  if (onPress) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Close"
+        hitSlop={8}
+        onPress={onPress}
+        style={toViewStyle(style, styleCtx)}
+      >
+        {body}
+      </Pressable>
+    );
+  }
+  return <View style={toViewStyle(style, styleCtx)}>{body}</View>;
+}
+
+/** The press handler for a block the design marks as the close, or undefined
+ *  when it is not one (or the host wired no dismissal). One helper so text,
+ *  image and button blocks cannot drift on what "action: close" means. */
+function closePress(
+  block: { action?: "close" },
+  ctx: RenderContext
+): (() => void) | undefined {
+  return block.action === "close" && ctx.onClose ? ctx.onClose : undefined;
 }
 
 /** Typography that is NOT inherited (decoration) — everything else already
@@ -676,6 +756,7 @@ function Block({
           style={block.style}
           ctx={ctx}
           inherited={inherited}
+          onPress={closePress(block, ctx)}
         />
       );
 
@@ -692,8 +773,17 @@ function Block({
           s.aspectRatio !== undefined ||
           (s.top !== undefined && s.bottom !== undefined) ||
           s.flex !== undefined);
+      // An icon the design marks as the close (REV-252). Same rule as text:
+      // the whole box is the target, and the style lands on the Pressable so
+      // a pinned icon keeps its offsets.
+      const closeImage = closePress(block, ctx);
+      const ImageBox = closeImage ? Pressable : View;
       return (
-        <View
+        <ImageBox
+          accessibilityRole={closeImage ? "button" : undefined}
+          accessibilityLabel={closeImage ? "Close" : undefined}
+          hitSlop={closeImage ? 8 : undefined}
+          onPress={closeImage}
           style={[
             sized ? null : { height: 160 },
             { borderRadius: round ? 9999 : sized ? 0 : 16, overflow: "hidden", flexShrink: 0 },
@@ -715,7 +805,7 @@ function Block({
               }}
             />
           )}
-        </View>
+        </ImageBox>
       );
     }
 
@@ -769,12 +859,17 @@ function Block({
       // A converted CTA sizes itself and centres with flex; the padded default
       // is only for buttons added by hand.
       const sized = block.style?.height !== undefined;
+      // A button the design marks as the close dismisses instead of buying,
+      // and takes no accent fill: the CTA must stay the one accented thing on
+      // the screen, or a "Not now" competes with "Subscribe" for the eye.
+      const close = closePress(block, ctx);
       return (
         <Pressable
-          onPress={ctx.onPurchase}
+          accessibilityRole="button"
+          onPress={close ?? ctx.onPurchase}
           style={[
             {
-              backgroundColor: doc.accent,
+              backgroundColor: close ? "transparent" : doc.accent,
               borderRadius: 12,
               paddingVertical: sized ? 0 : 15,
               paddingHorizontal: 16,
@@ -787,7 +882,11 @@ function Block({
           <Text
             style={[
               inheritedTextStyle(text, ctx.style),
-              { color: doc.accentInk, fontWeight: "800", textAlign: "center" },
+              {
+                color: close ? doc.textColor : doc.accentInk,
+                fontWeight: "800",
+                textAlign: "center",
+              },
               // The CTA's own colour/size, when the design set one.
               toTextStyle(block.style, styleCtx),
             ]}
@@ -1020,6 +1119,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
     onRestore: props.onRestore,
     onTerms: props.onTerms,
     onPrivacy: props.onPrivacy,
+    onClose: props.onClose,
     footer: props.footer,
     heroImageUrl: props.heroImageUrl,
     gradient: props.gradient,
@@ -1035,6 +1135,15 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
       inherited={rootText}
     />
   ));
+
+  // REV-252: the renderer's own close, drawn only for a design that authors
+  // none. Rendered as a sibling of the tree — outside the canvas scale — so
+  // it keeps its tap size and its distance from the screen edge whatever the
+  // device width does to the design.
+  const fallbackClose =
+    props.onClose && !hasCloseAction(doc.blocks) ? (
+      <FallbackClose doc={doc} onPress={props.onClose} />
+    ) : null;
 
   const [width, setWidth] = React.useState<number | null>(null);
 
@@ -1084,6 +1193,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
             </View>
           </View>
         </ScrollView>
+        {fallbackClose}
       </ScreenBackground>
     );
   }
@@ -1105,6 +1215,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
       >
         {children}
       </ScrollView>
+      {fallbackClose}
     </ScreenBackground>
   );
 }

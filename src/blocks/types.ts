@@ -125,10 +125,20 @@ export interface BlockStyle {
   overflow?: "hidden" | "visible";
 }
 
+/** What tapping a block does. Omitted means the block is decoration.
+ *
+ *  A FIELD on the existing block types rather than a new block type, so an
+ *  SDK older than this one drops it and still renders the element exactly as
+ *  it does today — a design carrying a close chip degrades to inert rather
+ *  than losing the chip, which is what a new block type would have cost. */
+export type BlockAction = "close";
+
 export interface TextBlock {
   id: string;
   type: "text";
   text: string;
+  /** Tapping this block dismisses the paywall. See BlockAction. */
+  action?: BlockAction;
   style?: BlockStyle;
 }
 
@@ -140,6 +150,8 @@ export interface ImageBlock {
   shape?: "rect" | "circle";
   fit?: "cover" | "contain";
   placeholder?: string;
+  /** Tapping this block dismisses the paywall. See BlockAction. */
+  action?: BlockAction;
   style?: BlockStyle;
 }
 
@@ -170,6 +182,9 @@ export interface ButtonBlock {
   id: string;
   type: "button";
   label: string;
+  /** `close` turns this button into a dismiss ("Not now") instead of the
+   *  purchase CTA, which is what a button means by default. */
+  action?: BlockAction;
   style?: BlockStyle;
 }
 
@@ -250,3 +265,28 @@ export interface PaywallBlockDoc {
 
 /** The device screen `canvas` designs are authored against. */
 export const DESIGN_CANVAS = { width: 393, height: 852 } as const;
+
+/** Does this tree author a dismiss affordance that is CERTAIN to render?
+ *
+ *  The renderer draws its own close button only when this is false, so a
+ *  design written before close existed becomes dismissible without being
+ *  edited, and a design that DOES author a close chip never shows two. The
+ *  same predicate is implemented in every Revnix SDK — keep them identical.
+ *
+ *  Conditional containers are deliberately not searched: a `repeat` card
+ *  renders once per package (none, when the offering is empty) and a
+ *  `packageIndex` card is hidden when the offering does not reach that index,
+ *  so a close authored inside one MIGHT not appear. Counting it would
+ *  suppress the fallback and leave the customer with no way out — the exact
+ *  bug this feature exists to fix. Two close buttons is merely ugly, so the
+ *  tie breaks toward always having one. */
+export function hasCloseAction(blocks: PaywallBlock[]): boolean {
+  return blocks.some((b) =>
+    b.type === "card"
+      ? b.repeat === undefined &&
+        b.packageIndex === undefined &&
+        hasCloseAction(b.children)
+      : (b.type === "text" || b.type === "image" || b.type === "button") &&
+        b.action === "close"
+  );
+}
