@@ -48,14 +48,80 @@ export type PaywallBackground = string | PaywallBackgroundSpec;
 
 const DEFAULT_GROUND = "#000000";
 
-/** The color `@bg` resolves to. A legacy string answers with itself — even
- *  a gradient, matching the dashboard renderer byte for byte. */
+/**
+ * The flat color a ground stands in for — what `@bg` resolves to, and what
+ * paints under a gradient this build cannot draw.
+ *
+ * It reads the LAST comma-separated layer, because in CSS the first-listed
+ * layer paints on TOP: taking the first color would answer with the
+ * translucent accent glow the library's Spotlight and Corner halo presets
+ * stack over their base, not with the base itself. Fully transparent stops are
+ * skipped for the same reason — a scrim that fades to `…00` says nothing about
+ * the ground under it.
+ *
+ * Returning the raw gradient here instead is what put this SDK and the
+ * dashboard out of step with the other five renderers, which have always
+ * collapsed it: `@bg` is fed to `color-mix()` (and, inside a gradient, to
+ * another gradient's stop list), and neither can take a gradient — so the raw
+ * form resolved to something invalid and painted NOTHING. Of the 250 shipped
+ * gallery presets only 7 have a gradient ground and none of those use `@bg`,
+ * so no design that ships today changes; what changes is a background a
+ * customer edits to a gradient, which used to silently drop every `@bg` tint
+ * on the screen.
+ */
 export function backgroundBaseColor(
   bg: PaywallBackground | undefined,
 ): string {
-  if (bg === undefined) return DEFAULT_GROUND;
-  if (typeof bg === "string") return bg;
-  return bg.color ?? DEFAULT_GROUND;
+  const ground = typeof bg === "string" ? bg : bg?.color;
+  if (ground === undefined) return DEFAULT_GROUND;
+  const layers = splitLayers(ground);
+  const bottom = layers.length > 0 ? layers[layers.length - 1]! : ground;
+  const colors = bottom.match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/gi);
+  if (!colors) return ground;
+  return colors.find((color) => !isFullyTransparent(color)) ?? colors[0]!;
+}
+
+/** Whether a color literal is fully transparent. Kept here rather than routed
+ *  through `color.ts`, which imports THIS module — only the two forms the
+ *  dashboard emits are recognized, and anything else counts as opaque, which
+ *  is the safe answer for picking a ground. */
+function isFullyTransparent(color: string): boolean {
+  const s = color.trim();
+  if (s.startsWith("#")) {
+    const hex = s.slice(1);
+    if (hex.length === 8) return parseInt(hex.slice(6), 16) === 0;
+    if (hex.length === 4) return parseInt(hex.slice(3).repeat(2), 16) === 0;
+    return false;
+  }
+  const open = s.indexOf("(");
+  const close = s.indexOf(")");
+  if (open < 0 || close < 0) return false;
+  const parts = s
+    .slice(open + 1, close)
+    .split(/[,/\s]+/)
+    .filter(Boolean);
+  return parts.length >= 4 && parseFloat(parts[3]!) === 0;
+}
+
+/** Splits on top-level commas only, so the commas inside `rgba(...)` and
+ *  inside a gradient's argument list do not tear a layer in half. */
+function splitLayers(input: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of input) {
+    if (ch === "(") depth++;
+    else if (ch === ")" && depth > 0) depth--;
+    if (ch === "," && depth === 0) {
+      out.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  const tail = current.trim();
+  if (tail) out.push(tail);
+  return out;
 }
 
 export interface ResolvedBackgroundImage {

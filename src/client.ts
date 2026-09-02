@@ -669,6 +669,13 @@ export class RevnixClient {
     this.disposed = true;
   }
 
+  /** A block paywall reporting a paint string it could not read. Routed to the
+   *  same sink as every other swallowed failure, so a host that already wired
+   *  `onDiagnostic` needs no new wiring to see render fallbacks. */
+  reportRenderDiagnostic(message: string): void {
+    this.diag("paywall.render", new Error(message));
+  }
+
   // REV-200 (M26): record one background failure. Never throws.
   private diag(op: string, error: unknown): void {
     this.bgFailures += 1;

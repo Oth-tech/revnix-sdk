@@ -159,6 +159,10 @@ export interface RevnixPaywallProps {
       viewId: string,
       options?: { placementKey?: string; paywallId?: string }
     ) => void;
+    /** Where a designed paywall reports a paint string it could not read.
+     *  Optional for the same reason: a client that predates it still renders,
+     *  it just reports nothing. */
+    reportRenderDiagnostic?: (message: string) => void;
   };
   /** Placement/paywall attribution attached to the view report. */
   placementKey?: string;
@@ -180,6 +184,13 @@ export interface RevnixPaywallProps {
    *  RN cannot load a font by name at runtime, so an unmapped face renders in
    *  the system font. */
   fontFamilyMap?: FontFamilyMap;
+  /** Reports a paint string the designed renderer could not read, or a
+   *  gradient it flattened for want of a `gradient` component.
+   *
+   *  Local only: nothing is sent anywhere. Passing `client` routes the same
+   *  reports to that client's own `onDiagnostic`, so most apps need neither —
+   *  this is for a host that renders a paywall without a client. */
+  onDiagnostic?: (message: string) => void;
 }
 
 export function RevnixPaywall(props: RevnixPaywallProps) {
@@ -229,6 +240,16 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
   // otherwise crash on "rendered more hooks than during the previous render".
   const { config } = props;
   const blocks = asBlockDoc(config.blocks);
+  // Both sinks fire when both are wired; nil when neither is, which is what
+  // stops the renderer building a message nobody will read.
+  const renderDiagnostic =
+    client?.reportRenderDiagnostic || props.onDiagnostic
+      ? (message: string) => {
+          client?.reportRenderDiagnostic?.(message);
+          props.onDiagnostic?.(message);
+        }
+      : undefined;
+
   if (blocks) {
     return (
       <RevnixBlockPaywall
@@ -247,6 +268,7 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
         gradient={props.gradient}
         blur={props.blur}
         fontFamilyMap={props.fontFamilyMap}
+        onDiagnostic={renderDiagnostic}
         style={props.style}
         loading={props.loading}
       />

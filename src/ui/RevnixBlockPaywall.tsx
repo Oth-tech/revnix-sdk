@@ -132,6 +132,13 @@ export interface RevnixBlockPaywallProps {
    *  family NAME, so each weight is its own registered family). Names absent
    *  from the map render in the system font. */
   fontFamilyMap?: FontFamilyMap;
+  /** Reports a paint string the renderer could not read, or a gradient it had
+   *  to flatten because no `gradient` component was passed.
+   *
+   *  Local only: nothing is sent anywhere. The screen still draws — a fill
+   *  falls back to a colour from the design rather than to black — so this is
+   *  the only way to learn that a paywall is rendering approximately. */
+  onDiagnostic?: (message: string) => void;
   style?: StyleProp<ViewStyle>;
   loading?: boolean;
 }
@@ -214,17 +221,28 @@ function GradientLayers({
   doc,
   gradient: Gradient,
   radius,
+  onDiagnostic,
 }: {
   fill: string | undefined;
   doc: PaywallBlockDoc;
   gradient?: RevnixGradientComponent;
+  onDiagnostic?: (message: string) => void;
   /** The box's corner radius. CSS clips a background to it for free; here the
    *  layers are real children, so they have to be rounded themselves or a
    *  rounded card shows square gradient corners. */
   radius?: number;
 }): React.ReactElement | null {
   const resolved = resolveColor(fill, doc);
-  if (!Gradient || !resolved || !isGradient(resolved)) return null;
+  if (!resolved || !isGradient(resolved)) return null;
+  if (!Gradient) {
+    // The fill still paints — `toViewStyle` degraded it to its ground stop —
+    // but the design asked for a gradient and this app passed no gradient
+    // component, so say so rather than letting it silently render flat.
+    onDiagnostic?.(
+      `gradient flattened: pass RevnixPaywall a \`gradient\` component to render ${resolved}`,
+    );
+    return null;
+  }
   const layers = parseGradient(resolved);
   if (layers.length === 0) return null;
   return (
@@ -249,6 +267,28 @@ function GradientLayers({
         );
       })}
     </React.Fragment>
+  );
+}
+
+/** A block's own gradient fill, ready to drop in as the first child of
+ *  whatever box that block renders. `toViewStyle` has already painted the
+ *  ground stop as the box's backgroundColor, so this adds the real gradient
+ *  over it — and renders nothing at all for a plain colour. */
+function BlockFill({
+  block,
+  ctx,
+}: {
+  block: PaywallBlock;
+  ctx: RenderContext;
+}): React.ReactElement | null {
+  return (
+    <GradientLayers
+      fill={block.style?.fill}
+      doc={ctx.doc}
+      gradient={ctx.gradient}
+      radius={block.style?.radius}
+      onDiagnostic={ctx.onDiagnostic}
+    />
   );
 }
 
@@ -392,12 +432,14 @@ function ScreenBackground({
   gradient,
   blur,
   style,
+  onDiagnostic,
   children,
 }: {
   doc: PaywallBlockDoc;
   gradient?: RevnixGradientComponent;
   blur?: RevnixBlurComponent;
   style?: StyleProp<ViewStyle>;
+  onDiagnostic?: (message: string) => void;
   children?: React.ReactNode;
 }) {
   const layers = backgroundLayers(
@@ -407,7 +449,12 @@ function ScreenBackground({
   const ground = fillColor(layers.ground, doc);
   return (
     <View style={[style, ground ? { backgroundColor: ground } : null]}>
-      <GradientLayers fill={layers.ground} doc={doc} gradient={gradient} />
+      <GradientLayers
+        fill={layers.ground}
+        doc={doc}
+        gradient={gradient}
+        onDiagnostic={onDiagnostic}
+      />
       {layers.image ? (
         <BackgroundPhoto image={layers.image} blur={blur} />
       ) : null}
@@ -521,6 +568,10 @@ interface RenderContext {
   footer?: { termsUrl?: string; privacyUrl?: string };
   heroImageUrl?: string;
   gradient?: RevnixGradientComponent;
+  /** Where the renderer reports a paint string it could not read, or a
+   *  gradient it had to flatten for want of a gradient component. Local only:
+   *  nothing is sent anywhere. */
+  onDiagnostic?: (message: string) => void;
   style: StyleContext;
 }
 
@@ -547,12 +598,21 @@ function BlockText({
   // size actually applies — the block's, or the one it inherited.
   const own = inherit(inherited, style, styleCtx);
   const body = (
-    <Text
-      numberOfLines={style?.nowrap ? 1 : undefined}
-      style={[inheritedTextStyle(own, ctx.style), textOnly(style, styleCtx)]}
-    >
-      {text}
-    </Text>
+    <React.Fragment>
+      <GradientLayers
+        fill={style?.fill}
+        doc={ctx.doc}
+        gradient={ctx.gradient}
+        radius={style?.radius}
+        onDiagnostic={ctx.onDiagnostic}
+      />
+      <Text
+        numberOfLines={style?.nowrap ? 1 : undefined}
+        style={[inheritedTextStyle(own, ctx.style), textOnly(style, styleCtx)]}
+      >
+        {text}
+      </Text>
+    </React.Fragment>
   );
   // The whole box is the target, not just the glyph: a close chip is mostly
   // padding, and a 12pt × is under the 44pt tap minimum on its own. The style
@@ -616,8 +676,10 @@ function Products({
         toViewStyle(block.style, ctx.style),
       ]}
     >
+      <BlockFill block={block} ctx={ctx} />
       {packages.map((pkg) => {
         const selected = pkg.packageId === ctx.selectedId;
+        const cardStyle = selected ? block.highlightStyle : block.cardStyle;
         return (
           <Pressable
             key={pkg.packageId}
@@ -637,12 +699,16 @@ function Products({
                   ? withAlpha(doc.accent, 0.12)
                   : "transparent",
               },
-              toViewStyle(
-                selected ? block.highlightStyle : block.cardStyle,
-                ctx.style,
-              ),
+              toViewStyle(cardStyle, ctx.style),
             ]}
           >
+            <GradientLayers
+              fill={cardStyle?.fill}
+              doc={doc}
+              gradient={ctx.gradient}
+              radius={cardStyle?.radius ?? 14}
+              onDiagnostic={ctx.onDiagnostic}
+            />
             {selected && block.badgeText ? (
               <View
                 style={{
@@ -790,6 +856,7 @@ function Block({
             view,
           ]}
         >
+          <BlockFill block={block} ctx={ctx} />
           {url ? (
             <Image
               source={{ uri: url }}
@@ -814,6 +881,7 @@ function Block({
         <View
           style={[{ flexDirection: "column", gap: block.style?.gap ?? 8 }, view]}
         >
+          <BlockFill block={block} ctx={ctx} />
           {block.items.map((item, i) => (
             <View key={i} style={{ flexDirection: "row", gap: 9 }}>
               <Text
@@ -879,6 +947,7 @@ function Block({
             view,
           ]}
         >
+          <BlockFill block={block} ctx={ctx} />
           <Text
             style={[
               inheritedTextStyle(text, ctx.style),
@@ -923,6 +992,7 @@ function Block({
             view,
           ]}
         >
+          <BlockFill block={block} ctx={ctx} />
           {links.map((link) => (
             <Pressable key={link.label} onPress={link.onPress}>
               <Text
@@ -946,7 +1016,9 @@ function Block({
         // INHERITED text colour, not the screen default.
         <View
           style={[{ height: 1, backgroundColor: hairlineColor(text.color) }, view]}
-        />
+        >
+          <BlockFill block={block} ctx={ctx} />
+        </View>
       );
 
     case "spacer":
@@ -1097,6 +1169,8 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
     doc,
     fontSize: DEFAULT_FONT_SIZE,
     fontFamilyMap: props.fontFamilyMap,
+    onDiagnostic: props.onDiagnostic,
+    paintsGradients: props.gradient !== undefined,
   };
 
   // The screen's own typography is the root of the inheritance chain, exactly
@@ -1123,6 +1197,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
     footer: props.footer,
     heroImageUrl: props.heroImageUrl,
     gradient: props.gradient,
+    onDiagnostic: props.onDiagnostic,
     style: styleCtx,
   };
 
@@ -1159,6 +1234,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
         doc={doc}
         gradient={props.gradient}
         blur={props.blur}
+        onDiagnostic={props.onDiagnostic}
         style={[{ flex: 1 }, props.style]}
       >
         {/* The canvas keeps the aspect ratio it was designed at, so on a
@@ -1203,6 +1279,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
       doc={doc}
       gradient={props.gradient}
       blur={props.blur}
+      onDiagnostic={props.onDiagnostic}
       style={[{ flex: 1 }, props.style]}
     >
       <ScrollView
