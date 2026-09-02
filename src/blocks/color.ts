@@ -115,6 +115,26 @@ export interface GradientLayer {
   center?: { x: number; y: number };
 }
 
+/**
+ * Whether a paint string's BOTTOM layer is a repeating pattern.
+ *
+ * A `repeating-*` gradient is a TEXTURE, and the colors inside it are stripe
+ * colors rather than the surface's. React Native cannot draw one, and painting
+ * a color lifted out of its arguments across the whole box is a WRONG answer
+ * rather than a degraded one — the library's hairline grid is one color every
+ * 26px, and as a solid fill it is a slab. Such a fill paints nothing instead.
+ *
+ * The bottom layer decides, so a pattern stacked over a real ground
+ * (`repeating-…(…), #FBF3E4`) still falls back to that ground.
+ */
+export function isRepeatingPattern(value: string | undefined): boolean {
+  const s = value?.trim() ?? "";
+  if (!s) return false;
+  const layers = splitLayers(s);
+  const bottom = layers.length > 0 ? layers[layers.length - 1]! : s;
+  return /^repeating-/i.test(bottom);
+}
+
 /** True when the string is a CSS gradient rather than a plain color. */
 export function isGradient(value: string): boolean {
   return /gradient\s*\(/i.test(value);
@@ -129,7 +149,15 @@ export function parseGradient(value: string): GradientLayer[] {
     if (!match) {
       // A plain color among the layers is the design's ground. Dropping it
       // would leave the screen painted by a translucent glow instead.
-      if (raw) layers.push({ kind: "solid", angle: 180, colors: [raw] });
+      //
+      // It has to LOOK like a color, though: any other layer — a
+      // `repeating-linear-gradient`, a `url()` — used to be accepted here and
+      // handed to the host's gradient component as a color string, which is not
+      // one. Dropping it instead is what lets the caller see there is nothing
+      // paintable and degrade to a flat color.
+      if (raw && hasColor(raw)) {
+        layers.push({ kind: "solid", angle: 180, colors: [raw] });
+      }
       continue;
     }
     const kind = match[1]!.toLowerCase() as "linear" | "radial";
@@ -157,17 +185,38 @@ export function parseGradient(value: string): GradientLayer[] {
     const locations: number[] = [];
     let positioned = 0;
     for (const arg of args.slice(start)) {
-      const stop = arg.trim();
-      if (!stop) continue;
-      const pct = stop.match(/\s(-?[\d.]+)%$/);
-      const color = pct ? stop.slice(0, stop.length - pct[0].length).trim() : stop;
-      if (!color) continue;
-      colors.push(color);
-      if (pct) {
-        locations.push(Math.max(0, Math.min(1, parseFloat(pct[1]!) / 100)));
-        positioned++;
-      } else {
+      // CSS allows TWO positions on one stop — `@accent 0 22%` is the same
+      // color at both, the hard edge the library's progress bars and split
+      // panels are drawn with — and a unitless `0` is a valid position. Reading
+      // only the last one left those designs a smooth fade instead of an edge.
+      let body = arg.trim();
+      const positions: number[] = [];
+      while (positions.length < 2) {
+        const found = body.match(/\s(-?[\d.]+%|0)$/);
+        if (!found) break;
+        const text = found[1]!;
+        const value = parseFloat(text);
+        // The token comes off `body` either way. Leaving a position this build
+        // could not read attached to the color would make the color itself
+        // unparseable, dropping the whole stop — and a gradient left with one
+        // stop does not parse at all. A malformed position is worth losing; the
+        // stop is not, so it falls through to the interpolated position.
+        body = body.slice(0, body.length - found[0].length).trim();
+        if (Number.isNaN(value)) break;
+        positions.unshift(
+          Math.max(0, Math.min(1, text.endsWith("%") ? value / 100 : value)),
+        );
+      }
+      if (!body) continue;
+      if (positions.length === 0) {
+        colors.push(body);
         locations.push(colors.length === 1 ? 0 : 1);
+        continue;
+      }
+      for (const position of positions) {
+        colors.push(body);
+        locations.push(position);
+        positioned++;
       }
     }
     if (colors.length === 0) continue;
@@ -211,15 +260,44 @@ function readCenter(prelude: string): { x: number; y: number } {
 }
 
 function hasColor(value: string): boolean {
-  return /^(#|rgb|hsl|@)/i.test(value.trim());
+  const s = value.trim();
+  return /^(#|rgb|hsl|@)/i.test(s) || s.toLowerCase() === "transparent";
+}
+
+/**
+ * A field that can only ever be ONE color — a border, text, an icon, a shadow.
+ *
+ * A gradient there has no native form (nor a CSS one: `border-color` takes no
+ * gradient, so the dashboard drops the declaration outright). Collapsing it to
+ * the color it stands for keeps the stroke or the glyph visible, which is
+ * nearer the design's intent than losing it — and, on React Native, avoids
+ * handing the platform a color string it cannot parse.
+ */
+export function flatColor(
+  value: string | undefined,
+  doc: PaywallBlockDoc,
+  onDiagnostic?: (message: string) => void,
+): string | undefined {
+  const resolved = resolveColor(value, doc);
+  if (resolved === undefined || !isGradient(resolved)) return resolved;
+  onDiagnostic?.(`gradient flattened in a colour-only field: ${resolved}`);
+  return gradientFallbackColor(resolved);
 }
 
 /** The solid to paint when no gradient component is available: the base
- *  layer's first stop, which is the design's ground color. */
+ *  layer's first stop, which is the design's ground color.
+ *
+ *  A value with no paintable layer at all — a `repeating-linear-gradient`, or
+ *  any other form this build does not read — falls through to the same colour
+ *  extraction the six SDKs share, so a box the design coloured still gets a
+ *  colour from the design rather than nothing. */
 export function gradientFallbackColor(value: string): string | undefined {
+  // A pattern's colors are STRIPE colors; spreading one over the whole box is a
+  // wrong answer rather than a degraded one, so it paints nothing.
+  if (isRepeatingPattern(value)) return undefined;
   const layers = parseGradient(value);
   const base = layers[layers.length - 1];
-  return base?.colors[0];
+  return base?.colors[0] ?? backgroundBaseColor(value);
 }
 
 /** Splits comma-separated background layers, ignoring commas inside parens. */

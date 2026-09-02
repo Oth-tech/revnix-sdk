@@ -25,8 +25,10 @@
 import type { TextStyle, ViewStyle } from "react-native";
 
 import {
+  flatColor,
   gradientFallbackColor,
   isGradient,
+  parseGradient,
   resolveColor,
   withAlpha,
 } from "./color.js";
@@ -62,6 +64,19 @@ export type FontFamilyMap = Record<string, FontMapping>;
 
 export interface StyleContext {
   doc: PaywallBlockDoc;
+  /** Whether the renderer will paint gradient layers over this style's
+   *  background — true when the host passed a `gradient` component.
+   *
+   *  It decides whether a gradient `fill` degrades to its ground stop or is
+   *  left transparent for the real layers. Painting the stop UNDER a gradient
+   *  that will actually be drawn makes the box opaque, and 83 of the library's
+   *  139 gradient fills fade through a translucent stop — they sit over the
+   *  screen's photo precisely so it shows through. */
+  paintsGradients?: boolean;
+  /** Where a paint string this build cannot read is reported. Local only —
+   *  the style still resolves, to a colour from the design rather than to
+   *  black, so this is the only way a host learns it is approximating. */
+  onDiagnostic?: (message: string) => void;
   /** Font size inherited from an ancestor, for em/multiplier conversions. */
   fontSize: number;
   /** Maps a design font family onto one the host app has registered. A name
@@ -151,6 +166,7 @@ export function inheritedTextStyle(
 function parseBorder(
   value: string,
   doc: PaywallBlockDoc,
+  onDiagnostic?: (message: string) => void,
 ): { width: number; color?: string } {
   const width = value.match(/(-?[\d.]+)px/);
   // The color is whatever remains once the width and the style keyword go.
@@ -160,7 +176,7 @@ function parseBorder(
     .trim();
   return {
     width: width ? parseFloat(width[1]!) : 1,
-    color: color ? resolveColor(color, doc) : undefined,
+    color: color ? flatColor(color, doc, onDiagnostic) : undefined,
   };
 }
 
@@ -178,13 +194,17 @@ function parseAspectRatio(value: number | string): number | undefined {
 /** A rough RN shadow for a CSS box-shadow. Only the presence and color of a
  *  shadow survive — RN cannot express layered glows, so one soft shadow is
  *  drawn rather than none (a card designed to lift should still lift). */
-function parseShadow(value: string, doc: PaywallBlockDoc): ViewStyle {
+function parseShadow(
+  value: string,
+  doc: PaywallBlockDoc,
+  onDiagnostic?: (message: string) => void,
+): ViewStyle {
   const lengths = [...value.matchAll(/(-?[\d.]+)px/g)].map((m) =>
     parseFloat(m[1]!),
   );
   const [offsetX = 0, offsetY = 0, blur = 0] = lengths;
   const colorMatch = value.match(/(rgba?\([^)]*\)|#[0-9a-fA-F]{3,8}|@[\w/]+)/);
-  const color = colorMatch ? resolveColor(colorMatch[1]!, doc) : undefined;
+  const color = colorMatch ? flatColor(colorMatch[1]!, doc, onDiagnostic) : undefined;
   return {
     shadowColor: color ?? "#000000",
     shadowOffset: { width: offsetX, height: offsetY },
@@ -205,16 +225,25 @@ export function toViewStyle(
   const out: ViewStyle = {};
   if (s.fill !== undefined) {
     // A gradient fill reaches RN as an unparseable string and paints nothing,
-    // so it degrades to its ground color here. The renderer paints the real
-    // gradient over this when the host supplied a gradient component.
+    // so it degrades to its ground color here — UNLESS the renderer is about to
+    // paint the real layers over this box, in which case the ground color would
+    // sit under them as an opaque backing and flatten every translucent stop.
     const fill = resolveColor(s.fill, doc);
-    out.backgroundColor =
-      fill && isGradient(fill) ? gradientFallbackColor(fill) : fill;
+    if (fill && isGradient(fill)) {
+      out.backgroundColor =
+        ctx.paintsGradients && parseGradient(fill).length > 0
+          ? "transparent"
+          : gradientFallbackColor(fill);
+    } else {
+      out.backgroundColor = fill;
+    }
   }
   if (s.opacity !== undefined) out.opacity = s.opacity / 100;
   if (s.borderColor !== undefined || s.borderWidth !== undefined) {
     out.borderWidth = s.borderWidth ?? 1;
-    out.borderColor = resolveColor(s.borderColor, doc) ?? doc.textColor;
+    // A gradient here reached RN as a color string it cannot parse; it is
+    // collapsed to the color it stands for so the stroke still draws.
+    out.borderColor = flatColor(s.borderColor, doc, ctx.onDiagnostic) ?? doc.textColor;
   }
   for (const [prop, side] of [
     ["borderTop", "Top"],
@@ -224,7 +253,7 @@ export function toViewStyle(
   ] as const) {
     const raw = s[prop];
     if (raw === undefined) continue;
-    const { width, color } = parseBorder(raw, doc);
+    const { width, color } = parseBorder(raw, doc, ctx.onDiagnostic);
     (out as Record<string, unknown>)[`border${side}Width`] = width;
     if (color) (out as Record<string, unknown>)[`border${side}Color`] = color;
   }
@@ -257,7 +286,7 @@ export function toViewStyle(
   if (s.justify !== undefined) out.justifyContent = JUSTIFY[s.justify];
   if (s.items !== undefined) out.alignItems = ITEMS[s.items];
   if (s.selfAlign !== undefined) out.alignSelf = ITEMS[s.selfAlign];
-  if (s.shadow !== undefined) Object.assign(out, parseShadow(s.shadow, doc));
+  if (s.shadow !== undefined) Object.assign(out, parseShadow(s.shadow, doc, ctx.onDiagnostic));
   // RN types the prop as a readonly array OR a raw CSS string, so the element
   // type is taken from the array arm and built up mutably before assignment.
   type Transform = Exclude<
@@ -319,7 +348,7 @@ export function toTextStyle(
   const { doc } = ctx;
   const out: TextStyle = {};
   const fontSize = s.fontSize ?? ctx.fontSize;
-  if (s.textColor !== undefined) out.color = resolveColor(s.textColor, doc);
+  if (s.textColor !== undefined) out.color = flatColor(s.textColor, doc, ctx.onDiagnostic);
   if (s.fontSize !== undefined) out.fontSize = s.fontSize;
   if (s.fontWeight !== undefined)
     out.fontWeight = String(s.fontWeight) as TextStyle["fontWeight"];
