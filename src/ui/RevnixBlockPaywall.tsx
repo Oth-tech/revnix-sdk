@@ -19,10 +19,13 @@
 
 import * as React from "react";
 import {
+  ActivityIndicator,
   Image,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
+  StatusBar,
   Text,
   View,
   type ColorValue,
@@ -56,6 +59,14 @@ import {
   type ResolvedBackgroundImage,
 } from "../blocks/background.js";
 import { resolveTags } from "../blocks/tags.js";
+import {
+  canvasMetrics,
+  effectiveStyle,
+  isVisible,
+  packageContext,
+  selectedPackageId,
+} from "../blocks/selection.js";
+import type { SelectionContext } from "../blocks/selection.js";
 import {
   DESIGN_CANVAS,
   hasCloseAction,
@@ -140,7 +151,13 @@ export interface RevnixBlockPaywallProps {
    *  the only way to learn that a paywall is rendering approximately. */
   onDiagnostic?: (message: string) => void;
   style?: StyleProp<ViewStyle>;
+  /** While true, purchase buttons are disabled and show a spinner in place
+   *  of their label (close buttons stay live). */
   loading?: boolean;
+  /** Top inset in points for the fallback close chip when the host draws the
+   *  paywall edge-to-edge (a status bar / notch). Defaults to the Android
+   *  status-bar height; on iOS the host's SafeAreaView normally covers it. */
+  safeAreaTop?: number;
 }
 
 /** CSS angle (0 = up, 90 = right) → RN gradient start/end points. */
@@ -525,9 +542,11 @@ function CardBox({
 function FallbackClose({
   doc,
   onPress,
+  safeAreaTop,
 }: {
   doc: PaywallBlockDoc;
   onPress: () => void;
+  safeAreaTop: number;
 }) {
   return (
     <Pressable
@@ -537,7 +556,7 @@ function FallbackClose({
       onPress={onPress}
       style={{
         position: "absolute",
-        top: 14,
+        top: 14 + safeAreaTop,
         right: 14,
         zIndex: 50,
         width: 30,
@@ -573,6 +592,8 @@ interface RenderContext {
    *  nothing is sent anywhere. */
   onDiagnostic?: (message: string) => void;
   style: StyleContext;
+  /** Host purchase in flight: purchase buttons disable and spin. */
+  loading: boolean;
 }
 
 /** Text blocks always render inside a View: a style may carry both typography
@@ -798,20 +819,36 @@ function Block({
   ctx,
   pkg,
   inherited,
+  selection,
 }: {
   block: PaywallBlock;
   ctx: RenderContext;
   /** The package this subtree describes — set inside a repeat container. */
   pkg?: RevnixPaywallPackage;
   inherited: InheritedText;
+  /** REV-262: whether the nearest plan card above is the selected one.
+   *  Undefined outside any plan card. */
+  selection?: SelectionContext;
 }): React.ReactElement | null {
   const { doc } = ctx;
   const styleCtx = { ...ctx.style, fontSize: inherited.fontSize };
+  // A pinned card judges its own context; every other block inherits the
+  // nearest plan card's. (A repeat card is judged per instance below.)
+  const context: SelectionContext =
+    block.type === "card" &&
+    block.packageIndex !== undefined &&
+    ctx.packages[block.packageIndex] !== undefined
+      ? packageContext(ctx.packages[block.packageIndex], ctx.selectedId)
+      : selection;
+  if (!isVisible(block, context)) return null;
+  // The style this block draws with in its state: `selectedStyle` merged
+  // over `style` while selected. Every read below goes through it.
+  const style = effectiveStyle(block, context);
   // Web flex items shrink by default (`flex: 0 1 auto`); RN's do not. Without
   // matching that, a row the browser fits by squeezing its children overflows
   // the screen here instead.
-  const view = { flexShrink: 1, ...toViewStyle(block.style, styleCtx) };
-  const text = inherit(inherited, block.style, styleCtx);
+  const view = { flexShrink: 1, ...toViewStyle(style, styleCtx) };
+  const text = inherit(inherited, style, styleCtx);
   const size = text.fontSize;
 
   switch (block.type) {
@@ -819,7 +856,7 @@ function Block({
       return (
         <BlockText
           text={resolveTags(block.text, pkg, ctx.packages)}
-          style={block.style}
+          style={style}
           ctx={ctx}
           inherited={inherited}
           onPress={closePress(block, ctx)}
@@ -829,7 +866,7 @@ function Block({
     case "image": {
       const url = block.url || ctx.heroImageUrl;
       const round = block.shape === "circle";
-      const s = block.style;
+      const s = style;
       // A converted design sizes its own slot; the 160pt default is only for
       // a slot dropped into a flow column, and must not fight it.
       const sized =
@@ -879,7 +916,7 @@ function Block({
     case "list":
       return (
         <View
-          style={[{ flexDirection: "column", gap: block.style?.gap ?? 8 }, view]}
+          style={[{ flexDirection: "column", gap: style?.gap ?? 8 }, view]}
         >
           <BlockFill block={block} ctx={ctx} />
           {block.items.map((item, i) => (
@@ -926,16 +963,22 @@ function Block({
     case "button": {
       // A converted CTA sizes itself and centres with flex; the padded default
       // is only for buttons added by hand.
-      const sized = block.style?.height !== undefined;
+      const sized = style?.height !== undefined;
       // A button the design marks as the close dismisses instead of buying,
       // and takes no accent fill: the CTA must stay the one accented thing on
       // the screen, or a "Not now" competes with "Subscribe" for the eye.
       const close = closePress(block, ctx);
+      // A purchase in flight: the button keeps its box and fill, loses its
+      // label to a spinner in the ink colour, and ignores taps. A close
+      // button is never blocked — the user can always leave.
+      const busy = !close && ctx.loading;
       return (
         <Pressable
           accessibilityRole="button"
+          accessibilityState={{ disabled: busy, busy }}
+          disabled={busy}
           onPress={close ?? ctx.onPurchase}
-          style={[
+          style={({ pressed }) => [
             {
               backgroundColor: close ? "transparent" : doc.accent,
               borderRadius: 12,
@@ -945,6 +988,13 @@ function Block({
               justifyContent: "center",
             },
             view,
+            // Pressed feedback (contract §4): 80% while the finger is down.
+            pressed && !busy
+              ? {
+                  opacity:
+                    (typeof view.opacity === "number" ? view.opacity : 1) * 0.8,
+                }
+              : null,
           ]}
         >
           <BlockFill block={block} ctx={ctx} />
@@ -957,11 +1007,18 @@ function Block({
                 textAlign: "center",
               },
               // The CTA's own colour/size, when the design set one.
-              toTextStyle(block.style, styleCtx),
+              toTextStyle(style, styleCtx),
+              busy ? { opacity: 0 } : null,
             ]}
           >
             {resolveTags(block.label, pkg, ctx.packages)}
           </Text>
+          {busy ? (
+            <ActivityIndicator
+              color={doc.accentInk}
+              style={{ position: "absolute" }}
+            />
+          ) : null}
         </Pressable>
       );
     }
@@ -1038,16 +1095,20 @@ function Block({
                 position: "relative",
                 flexDirection: "row",
                 flexWrap: "wrap",
-                gap: block.style?.gap ?? 10,
+                gap: style?.gap ?? 10,
               }
             : {
                 position: "relative",
                 flexDirection: layout === "row" ? "row" : "column",
-                gap: block.style?.gap ?? 10,
+                gap: style?.gap ?? 10,
               };
 
       const tracks = layout === "grid" ? gridTracks(block) : null;
-      const renderChildren = (context: RevnixPaywallPackage | undefined) =>
+      const renderChildren = (
+        context: RevnixPaywallPackage | undefined,
+        childSelection: SelectionContext,
+        childText: InheritedText = text
+      ) =>
         block.children.map((child, i) => {
           const node = (
             <Block
@@ -1055,7 +1116,8 @@ function Block({
               block={child}
               ctx={ctx}
               pkg={context}
-              inherited={text}
+              inherited={childText}
+              selection={childSelection}
             />
           );
           if (!tracks) return node;
@@ -1086,13 +1148,9 @@ function Block({
         return null;
       }
 
-      const boxStyle = (selected: boolean) => [
-        base,
-        layout === "stack" ? null : { borderRadius: 16 },
-        view,
-        selected ? toViewStyle(block.selectedStyle, styleCtx) : null,
-      ];
-
+      // A repeat card is one block drawn once per package, each instance in
+      // its own context, so its box, fill and inherited text are resolved
+      // per instance rather than from the `style` computed above.
       if (block.repeat === "packages") {
         const list: Array<RevnixPaywallPackage | undefined> = ctx.packages
           .length
@@ -1100,26 +1158,39 @@ function Block({
           : [undefined];
         return (
           <React.Fragment>
-            {list.map((p, i) => (
-              <CardBox
-                key={p?.packageId ?? i}
-                style={boxStyle(
-                  p !== undefined && p.packageId === ctx.selectedId,
-                )}
-                fill={block.style?.fill}
-                doc={doc}
-                gradient={ctx.gradient}
-                radius={block.style?.radius ?? (layout === "stack" ? undefined : 16)}
-                onPress={p ? () => ctx.onSelect(p.packageId) : undefined}
-              >
-                {renderChildren(p)}
-              </CardBox>
-            ))}
+            {list.map((p, i) => {
+              const instance = packageContext(p, ctx.selectedId) ?? selection;
+              if (!isVisible(block, instance)) return null;
+              const es = effectiveStyle(block, instance);
+              return (
+                <CardBox
+                  key={p?.packageId ?? i}
+                  style={[
+                    base,
+                    layout === "stack" ? null : { borderRadius: 16 },
+                    { flexShrink: 1, ...toViewStyle(es, styleCtx) },
+                  ]}
+                  fill={es?.fill}
+                  doc={doc}
+                  gradient={ctx.gradient}
+                  radius={es?.radius ?? (layout === "stack" ? undefined : 16)}
+                  onPress={p ? () => ctx.onSelect(p.packageId) : undefined}
+                >
+                  {renderChildren(p, instance, inherit(inherited, es, styleCtx))}
+                </CardBox>
+              );
+            })}
           </React.Fragment>
         );
       }
 
-      const context =
+      const boxStyle = [
+        base,
+        layout === "stack" ? null : { borderRadius: 16 },
+        view,
+      ];
+
+      const cardPackage =
         block.packageIndex !== undefined
           ? (ctx.packages[block.packageIndex] ?? pkg)
           : pkg;
@@ -1127,17 +1198,17 @@ function Block({
       // A card pinned to a package doubles as its selection target — that is
       // how hand-styled plan rows (a highlighted annual beside a plain
       // monthly) become tappable without a products block.
-      const pinned = block.packageIndex !== undefined && context !== undefined;
+      const pinned = block.packageIndex !== undefined && cardPackage !== undefined;
       return (
         <CardBox
-          style={boxStyle(pinned && context!.packageId === ctx.selectedId)}
-          fill={block.style?.fill}
+          style={boxStyle}
+          fill={style?.fill}
           doc={doc}
           gradient={ctx.gradient}
-          radius={block.style?.radius ?? (layout === "stack" ? undefined : 16)}
-          onPress={pinned ? () => ctx.onSelect(context!.packageId) : undefined}
+          radius={style?.radius ?? (layout === "stack" ? undefined : 16)}
+          onPress={pinned ? () => ctx.onSelect(cardPackage!.packageId) : undefined}
         >
-          {renderChildren(context)}
+          {renderChildren(cardPackage, context)}
         </CardBox>
       );
     }
@@ -1150,15 +1221,14 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
   const [internalSelected, setInternalSelected] = React.useState<
     string | undefined
   >(undefined);
-  const fallbackSelected =
-    packages.find((p) => p.packageId === props.highlightPackageId)?.packageId ??
-    packages[0]?.packageId;
-  const selectedId =
-    props.selectedPackageId ??
-    (internalSelected !== undefined &&
-    packages.some((p) => p.packageId === internalSelected)
-      ? internalSelected
-      : fallbackSelected);
+  // Contract §1: host → own tap → design highlight → first package, each
+  // only when the offering carries it.
+  const selectedId = selectedPackageId(
+    packages,
+    props.selectedPackageId,
+    internalSelected,
+    props.highlightPackageId
+  );
 
   const select = (packageId: string) => {
     setInternalSelected(packageId);
@@ -1199,6 +1269,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
     gradient: props.gradient,
     onDiagnostic: props.onDiagnostic,
     style: styleCtx,
+    loading: props.loading === true,
   };
 
   const children = doc.blocks.map((block) => (
@@ -1215,20 +1286,41 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
   // none. Rendered as a sibling of the tree — outside the canvas scale — so
   // it keeps its tap size and its distance from the screen edge whatever the
   // device width does to the design.
+  const safeAreaTop =
+    props.safeAreaTop ??
+    (Platform.OS === "android" ? (StatusBar.currentHeight ?? 0) : 0);
   const fallbackClose =
     props.onClose && !hasCloseAction(doc.blocks) ? (
-      <FallbackClose doc={doc} onPress={props.onClose} />
+      <FallbackClose
+        doc={doc}
+        onPress={props.onClose}
+        safeAreaTop={safeAreaTop}
+      />
     ) : null;
 
   const [width, setWidth] = React.useState<number | null>(null);
+  const [viewportHeight, setViewportHeight] = React.useState<number | null>(
+    null
+  );
 
   if (doc.layout === "canvas") {
     // Authored against the fixed device screen: lay the tree out at 1× and
     // scale the whole thing, so absolute placement inside stack containers
     // stays true at any width. RN scales about the centre, hence the
     // compensating translate — the design must grow from the top-left.
-    const scale = width === null ? 1 : width / DESIGN_CANVAS.width;
-    const scaledHeight = DESIGN_CANVAS.height * scale;
+    // Contract §3. The canvas keeps the aspect ratio it was designed at,
+    // scaled by width up to the 480pt tablet cap and centred beyond it. On a
+    // screen SHORTER than 852:393 it overflows and scrolls — that is what
+    // keeps the CTA and the legal links reachable. On a TALLER screen the
+    // design is stretched to the viewport instead of leaving a band below
+    // it: the root card is "100%" tall and bottom-anchored groups follow it,
+    // which is exactly what the web preview does for a taller frame.
+    const metrics =
+      width === null ? null : canvasMetrics(width, viewportHeight);
+    const scale = metrics?.scale ?? 1;
+    const overflows = metrics?.overflows ?? false;
+    const canvasHeight = metrics?.scaledHeight ?? DESIGN_CANVAS.height;
+    const left = metrics?.left ?? 0;
     return (
       <ScreenBackground
         doc={doc}
@@ -1237,14 +1329,16 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
         onDiagnostic={props.onDiagnostic}
         style={[{ flex: 1 }, props.style]}
       >
-        {/* The canvas keeps the aspect ratio it was designed at, so on a
-            screen shorter than 852:393 it does not fit. Scrolling is what
-            keeps the CTA and the legal links reachable there; on a taller
-            screen there is nothing to scroll. */}
         <ScrollView
-          contentContainerStyle={{
-            height: width === null ? DESIGN_CANVAS.height : scaledHeight,
-          }}
+          contentContainerStyle={{ height: canvasHeight }}
+          // A designed screen never shows a scrollbar — the web preview has
+          // none, and in an RTL app the indicator lands on the left edge of
+          // the artwork. When nothing overflows, scrolling is off entirely so
+          // a drag cannot bounce the design.
+          showsVerticalScrollIndicator={false}
+          scrollEnabled={overflows}
+          bounces={overflows}
+          onLayout={(e) => setViewportHeight(e.nativeEvent.layout.height)}
         >
           <View
             onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
@@ -1256,11 +1350,17 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
                 top: 0,
                 left: 0,
                 width: DESIGN_CANVAS.width,
-                height: DESIGN_CANVAS.height,
+                // Laid out at design height, or taller when the viewport is:
+                // the extra height is in DESIGN units so the scale still
+                // maps it onto the screen exactly.
+                height: canvasHeight / scale,
                 opacity: width === null ? 0 : 1,
                 transform: [
-                  { translateX: -(DESIGN_CANVAS.width * (1 - scale)) / 2 },
-                  { translateY: -(DESIGN_CANVAS.height * (1 - scale)) / 2 },
+                  {
+                    translateX:
+                      -(DESIGN_CANVAS.width * (1 - scale)) / 2 + left,
+                  },
+                  { translateY: -((canvasHeight / scale) * (1 - scale)) / 2 },
                   { scale },
                 ],
               }}
@@ -1289,6 +1389,9 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
           paddingTop: 18,
           paddingBottom: 30,
         }}
+        showsVerticalScrollIndicator={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
       >
         {children}
       </ScrollView>

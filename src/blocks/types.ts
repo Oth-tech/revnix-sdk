@@ -131,6 +131,10 @@ export interface BlockStyle {
  *  SDK older than this one drops it and still renders the element exactly as
  *  it does today — a design carrying a close chip degrades to inert rather
  *  than losing the chip, which is what a new block type would have cost. */
+/** REV-262: draw a block only while its plan card is (or is not) the selected
+ *  one. Ignored outside a package card — a root block is always drawn. */
+export type BlockVisibility = "selected" | "unselected";
+
 export type BlockAction = "close";
 
 export interface TextBlock {
@@ -140,6 +144,11 @@ export interface TextBlock {
   /** Tapping this block dismisses the paywall. See BlockAction. */
   action?: BlockAction;
   style?: BlockStyle;
+  /** REV-262: merged over `style`, field by field, while the block sits in a
+   *  selected plan card (a pinned or repeated card whose package is the
+   *  selected one, or any descendant of such a card). */
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
 }
 
 export interface ImageBlock {
@@ -153,6 +162,11 @@ export interface ImageBlock {
   /** Tapping this block dismisses the paywall. See BlockAction. */
   action?: BlockAction;
   style?: BlockStyle;
+  /** REV-262: merged over `style`, field by field, while the block sits in a
+   *  selected plan card (a pinned or repeated card whose package is the
+   *  selected one, or any descendant of such a card). */
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
 }
 
 export interface ListBlock {
@@ -162,6 +176,11 @@ export interface ListBlock {
   /** Icon color; defaults to the screen accent. */
   iconColor?: string;
   style?: BlockStyle;
+  /** REV-262: merged over `style`, field by field, while the block sits in a
+   *  selected plan card (a pinned or repeated card whose package is the
+   *  selected one, or any descendant of such a card). */
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
 }
 
 /** Renders the attached offering's packages as selectable cards. */
@@ -176,6 +195,11 @@ export interface ProductsBlock {
   cardStyle?: BlockStyle;
   highlightStyle?: BlockStyle;
   style?: BlockStyle;
+  /** REV-262: merged over `style`, field by field, while the block sits in a
+   *  selected plan card (a pinned or repeated card whose package is the
+   *  selected one, or any descendant of such a card). */
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
 }
 
 export interface ButtonBlock {
@@ -186,6 +210,11 @@ export interface ButtonBlock {
    *  purchase CTA, which is what a button means by default. */
   action?: BlockAction;
   style?: BlockStyle;
+  /** REV-262: merged over `style`, field by field, while the block sits in a
+   *  selected plan card (a pinned or repeated card whose package is the
+   *  selected one, or any descendant of such a card). */
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
 }
 
 export interface LinksBlock {
@@ -197,12 +226,22 @@ export interface LinksBlock {
   termsUrl?: string;
   privacyUrl?: string;
   style?: BlockStyle;
+  /** REV-262: merged over `style`, field by field, while the block sits in a
+   *  selected plan card (a pinned or repeated card whose package is the
+   *  selected one, or any descendant of such a card). */
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
 }
 
 export interface LineBlock {
   id: string;
   type: "line";
   style?: BlockStyle;
+  /** REV-262: merged over `style`, field by field, while the block sits in a
+   *  selected plan card (a pinned or repeated card whose package is the
+   *  selected one, or any descendant of such a card). */
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
 }
 
 export interface SpacerBlock {
@@ -211,6 +250,11 @@ export interface SpacerBlock {
   /** Grows to push what follows to the bottom. */
   flex?: boolean;
   style?: BlockStyle;
+  /** REV-262: merged over `style`, field by field, while the block sits in a
+   *  selected plan card (a pinned or repeated card whose package is the
+   *  selected one, or any descendant of such a card). */
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
 }
 
 /** The one container block. `layout` picks how children are placed: column /
@@ -223,8 +267,6 @@ export interface CardBlock {
   /** Renders this container once per package in the attached offering. Its
    *  subtree reads the package through tag variables. */
   repeat?: "packages";
-  /** Merged over `style` on the package the customer has selected. */
-  selectedStyle?: BlockStyle;
   /** "This card describes package N of the offering". A card whose index the
    *  offering does not reach is hidden. */
   packageIndex?: number;
@@ -234,6 +276,11 @@ export interface CardBlock {
   gridColumns?: string;
   children: PaywallBlock[];
   style?: BlockStyle;
+  /** REV-262: merged over `style`, field by field, while the block sits in a
+   *  selected plan card (a pinned or repeated card whose package is the
+   *  selected one, or any descendant of such a card). */
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
 }
 
 export type PaywallBlock =
@@ -282,11 +329,15 @@ export const DESIGN_CANVAS = { width: 393, height: 852 } as const;
  *  tie breaks toward always having one. */
 export function hasCloseAction(blocks: PaywallBlock[]): boolean {
   return blocks.some((b) =>
-    b.type === "card"
-      ? b.repeat === undefined &&
-        b.packageIndex === undefined &&
-        hasCloseAction(b.children)
-      : (b.type === "text" || b.type === "image" || b.type === "button") &&
-        b.action === "close"
+    // A close the design only draws in one selection state (`visibility`)
+    // must not suppress the fallback chip — the other state would have none.
+    b.visibility !== undefined
+      ? false
+      : b.type === "card"
+        ? b.repeat === undefined &&
+          b.packageIndex === undefined &&
+          hasCloseAction(b.children)
+        : (b.type === "text" || b.type === "image" || b.type === "button") &&
+          b.action === "close"
   );
 }

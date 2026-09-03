@@ -100,6 +100,16 @@ export interface RegisterPurchaseInput {
    *  confirms the charge. Always send it if you can; apps that enable
    *  "require store-verified purchases" reject claims that lack it. */
   signedTransactionInfo?: string;
+  /** REV-261: which paywall sold it. Pass the `viewId` `logPaywallShown`
+   *  returned for the display the customer bought from and the server
+   *  resolves it to that view's paywall and placement, so per-paywall
+   *  analytics credit the purchase (and every renewal on it) exactly.
+   *  Without it the server attributes the purchase to the customer's last
+   *  paywall view inside the previous 24 hours. */
+  viewId?: string;
+  /** Explicit paywall / placement; each wins over the view's when sent. */
+  paywallId?: string;
+  placementKey?: string;
 }
 
 export interface RegisterPurchaseResult {
