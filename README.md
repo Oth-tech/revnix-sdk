@@ -43,11 +43,12 @@ The dashboard issues two kinds of key, and the key fixes the app **and**
 environment server-side; a test key can never write into production:
 
 - **Publishable** `rvx_pk_live_…` / `rvx_pk_test_…`: safe to embed in the
-  app. Can read entitlements/identity, register its own purchases, and report
-  installs and paywall views.
+  app. Can read entitlements, register its own purchases, report installs and
+  paywall views/closes, and set non-reserved attributes.
 - **Secret** `rvx_sk_live_…` / `rvx_sk_test_…`: server-side only, never in
-  an app binary. Additionally allowed to call `identify()` and `alias()`
-  (plus the server-only grants/attributes endpoints).
+  an app binary. Additionally allowed to call `identify()`, `alias()` and
+  `getIdentity()` — the identity graph is server-only — plus the server-only
+  grants/attributes endpoints.
 
 Calling a secret-gated method with a publishable key fails with
 `RevnixAuthError` (403). Legacy `rvx_live_…`/`rvx_test_…` keys still work and
@@ -108,12 +109,14 @@ await revnix.identify(user.uid);        // on login, merges anonymous history
   that id. **Requires a secret or legacy key**, on a publishable key the SDK
   throws `RevnixAuthError` locally, before any network call; run it from your
   backend instead and let the device pick up the canonical id on its next
-  `registerPurchase()`/`getIdentity()`.
+  `registerPurchase()` (its response always carries the caller's canonical id).
 - `alias(aliasId)`: attach an alternate id to the current customer (the
   alias must be a fresh id; use `identify()` to merge existing customers).
   Also secret-gated.
 - `getIdentity()`: resolves the current id's identity cluster:
-  `{ canonicalId, isAlias, anonymous, linkedIds }`.
+  `{ canonicalId, isAlias, anonymous, linkedIds }`. **Also secret-gated** —
+  the response is an identity graph, so the server refuses publishable keys
+  and the SDK throws `RevnixAuthError` locally on one, before any network call.
 - `logout()`: generates a fresh anonymous customer locally (never merges,
   never re-reports an install).
 
@@ -407,7 +410,7 @@ load `react` / `react-native` (both are peer dependencies used only by `/ui`).
 |---|---|---|
 | `registerPurchase` | `POST /v1/purchases` | any |
 | `getEntitlements` / `waitForEntitlements` | `GET /v1/customers/{id}/entitlements` | any |
-| `getIdentity` | `GET /v1/customers/{id}/identity` | any |
+| `getIdentity` | `GET /v1/customers/{id}/identity` | secret |
 | `resolvePlacement` | `GET /v1/placements/{key}/offering` | any |
 | install report | `POST /v1/installs` | any |
 | `logPaywallShown` | `POST /v1/paywalls/viewed` | any |

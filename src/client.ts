@@ -176,15 +176,21 @@ export class RevnixClient {
   // merge itself into any customer. The server 403s a publishable key; refuse
   // before the network so the failure is deterministic in development (not
   // first discovered on a real login) and the message says what to do.
+  //
+  // The identity READ is gated the same way (server-side REV-184): the
+  // response is an identity graph, and tenants routinely use emails and user
+  // ids as customer ids, so a publishable key could walk candidate ids and
+  // read back who is a customer. Until REV-259 getIdentity() skipped this
+  // check and every device call ended in a 403 the docs never mentioned.
   private requireSecretKey(method: string): void {
     if (this.apiKey.startsWith("rvx_pk_")) {
       throw new RevnixAuthError(
         403,
         `Revnix: ${method}() requires a secret key (rvx_sk_…) and must be ` +
           `called from your backend. A publishable key ships inside the app ` +
-          `binary, so it may not merge or alias identities — send the ids to ` +
-          `your server and call ${method}() there. Never embed a secret key ` +
-          `in the app.`
+          `binary, so it may not read or rewire the identity graph — send ` +
+          `the ids to your server and call ${method}() there. Never embed a ` +
+          `secret key in the app.`
       );
     }
   }
@@ -198,7 +204,8 @@ export class RevnixClient {
    *  any network call: identity merges from a device would let any caller
    *  claim any customer. Device flow: send `getCustomerId()` and your user id
    *  to your server, identify there with an rvx_sk_ key, and the device picks
-   *  up the canonical id on its next registerPurchase()/getIdentity(). */
+   *  up the canonical id on its next registerPurchase() (its response always
+   *  carries the caller's canonical id). */
   async identify(
     userId: string,
     options?: { strategy?: IdentifyStrategy }
@@ -515,8 +522,13 @@ export class RevnixClient {
     );
   }
 
-  /** How the current id resolves: canonical id, alias status, linked ids. */
+  /** How the current id resolves: canonical id, alias status, linked ids.
+   *
+   *  Secret-key only — the response is an identity graph, so the server 403s
+   *  a publishable key (REV-184). On an rvx_pk_ key this throws
+   *  RevnixAuthError locally, before any network call, like identify(). */
   async getIdentity(): Promise<IdentityInfo> {
+    this.requireSecretKey("getIdentity");
     const customerId = await this.customerIdPromise;
     return await this.request<IdentityInfo>(
       "GET",

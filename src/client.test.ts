@@ -115,6 +115,46 @@ describe("customer id lifecycle", () => {
     expect(call.body).toEqual({ previousId: anonId, newId: "user_42" });
   });
 
+  test("getIdentity refuses a publishable key locally, before any network call", async () => {
+    // REV-259: the server has 403'd publishable keys on the identity read
+    // since REV-184 (the response is an identity graph). identify()/alias()
+    // already failed fast on the device; getIdentity() went to the network
+    // and surfaced a bare 403 instead.
+    const fetchImpl = mockFetch();
+    const client = new RevnixClient({
+      ...CONFIG,
+      apiKey: "rvx_pk_test_abc",
+      storage: memoryStorage(),
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    await expect(client.getIdentity()).rejects.toThrow(
+      /getIdentity\(\) requires a secret key/
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("getIdentity with a secret key reads GET /v1/customers/{id}/identity", async () => {
+    const fetchImpl = mockFetch({
+      body: { canonicalId: "user_42", isAlias: true, anonymous: false },
+    });
+    const client = new RevnixClient({
+      ...CONFIG,
+      apiKey: "rvx_sk_test_abc",
+      storage: memoryStorage(),
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    const id = await client.getCustomerId();
+    const identity = await client.getIdentity();
+    expect(identity.canonicalId).toBe("user_42");
+    const call = lastCall(fetchImpl);
+    expect(call.method).toBe("GET");
+    expect(call.url).toBe(
+      `https://demo.convex.site/v1/customers/${encodeURIComponent(id)}/identity`
+    );
+  });
+
   test("identify is a no-op when already that customer; logout starts fresh", async () => {
     const fetchImpl = mockFetch();
     const client = new RevnixClient({
