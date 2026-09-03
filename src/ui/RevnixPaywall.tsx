@@ -29,7 +29,11 @@ import {
   type ViewStyle,
 } from "react-native";
 
-import type { PaywallConfig } from "../types.js";
+import type {
+  PaywallConfig,
+  PaywallInteraction,
+  PaywallPurchaseOutcome,
+} from "../types.js";
 import type { PaywallBlockDoc } from "../blocks/types.js";
 import type { FontFamilyMap } from "../blocks/style.js";
 import { withAlpha } from "../blocks/color.js";
@@ -73,6 +77,12 @@ export interface RevnixPaywallPackage {
   amountMinor?: number;
   /** ISO currency of `amountMinor`. */
   currency?: string;
+  /** REV-263: the catalog product behind this package. Only telemetry reads
+   *  it — a `selected` or `purchase_started` report names the plan the way
+   *  the rest of the ledger does. Optional: without it the interaction is
+   *  still reported, just with no plan attached (the package id would be
+   *  worse — it would look like a product that does not exist). */
+  productId?: string;
 }
 
 /** Colors the paywall renders with. Defaults mirror the dashboard preview
@@ -121,8 +131,19 @@ const CARD_BG = { dark: "#181b22", light: "#f4f5f7" } as const;
 export interface RevnixPaywallProps {
   config: PaywallConfig;
   packages: RevnixPaywallPackage[];
-  /** Called with the selected packageId when the CTA is pressed. */
-  onPurchase: (packageId: string) => void;
+  /** Called with the selected packageId when the CTA is pressed.
+   *
+   *  REV-263: passing `client` reports `paywall.purchase_started` the moment
+   *  this fires. The OUTCOME is yours — only the host performs the store
+   *  call — so to have the paywall report it too, return it (or a promise of
+   *  it): `cancelled` becomes `paywall.purchase_abandoned`, `failed` becomes
+   *  `paywall.purchase_failed`, and a promise that REJECTS is reported as a
+   *  failure carrying the error's message. Returning nothing keeps today's
+   *  behavior exactly — the start is reported, the outcome is not, and you
+   *  can still report it yourself with `client.logPaywallEvent`. */
+  onPurchase: (
+    packageId: string
+  ) => void | PaywallPurchaseOutcome | Promise<PaywallPurchaseOutcome | void>;
   /** Controlled selection; omit to let the paywall manage it (initial
    *  selection is the config's highlight package, else the first package). */
   selectedPackageId?: string;
@@ -163,6 +184,21 @@ export interface RevnixPaywallProps {
      *  Optional for the same reason: a client that predates it still renders,
      *  it just reports nothing. */
     reportRenderDiagnostic?: (message: string) => void;
+    /** REV-263: the interaction vocabulary. Optional so a host on an older
+     *  client still renders and still reports views — it just reports none of
+     *  the six. */
+    logPaywallEvent?: (
+      event: PaywallInteraction,
+      viewId: string,
+      options?: {
+        placementKey?: string;
+        paywallId?: string;
+        productId?: string;
+        code?: string;
+        message?: string;
+        eventId?: string;
+      }
+    ) => void;
   };
   /** Placement/paywall attribution attached to the view report. */
   placementKey?: string;
@@ -208,6 +244,144 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
     if (typeof id === "string") viewIdRef.current = id;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ——— REV-263: the interaction vocabulary ———
+  //
+  // Everything below reports what this component genuinely OBSERVES and
+  // nothing it would have to guess. It sees the selection change, the CTA
+  // press, the restore press, and an offering that arrived with no packages
+  // to sell. It does NOT see the store sheet — the host owns that call — so
+  // the purchase outcome is only reported when the host hands it back from
+  // `onPurchase`.
+  //
+  // Every report is wrapped: a telemetry failure must never break the paywall
+  // the customer is standing on, the same rule REV-252 set for the close.
+  const report = React.useCallback(
+    (
+      event: PaywallInteraction,
+      options?: {
+        productId?: string;
+        code?: string;
+        message?: string;
+        eventId?: string;
+      }
+    ) => {
+      const viewId = viewIdRef.current;
+      if (!client?.logPaywallEvent || !viewId || disableViewTracking) return;
+      try {
+        client.logPaywallEvent(event, viewId, {
+          placementKey,
+          paywallId,
+          ...options,
+        });
+      } catch {
+        // Best-effort, exactly like the close beacon.
+      }
+    },
+    [client, placementKey, paywallId, disableViewTracking]
+  );
+
+  // packageId → productId, so a report names the plan the way the rest of the
+  // ledger does. A package whose product is unknown reports no productId
+  // rather than the package id, which would look like a product that does not
+  // exist.
+  const { packages } = props;
+  const productOf = React.useCallback(
+    (packageId: string) =>
+      packages.find((p) => p.packageId === packageId)?.productId,
+    [packages]
+  );
+
+  // An offering with nothing to sell is the one failure the component can see
+  // by itself, and the one most worth knowing about: the paywall painted, the
+  // customer could not buy. Reported once per display, after the view report
+  // so the two arrive in order.
+  const emptyOnMount = props.packages.length === 0;
+  React.useEffect(() => {
+    if (emptyOnMount) {
+      report("error", {
+        code: "no_products",
+        message: "paywall displayed with no packages",
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const { onSelectPackage } = props;
+  const handleSelect = React.useMemo(
+    () => (packageId: string) => {
+      report("selected", {
+        productId: productOf(packageId),
+        // One `selected` per (display, package): a customer toggling
+        // monthly → yearly → monthly considered two plans, not three, and the
+        // server's default (key on viewId alone) would have recorded only the
+        // first. Analytics counts stages per display anyway, so this is about
+        // WHICH plans were weighed.
+        eventId: `${viewIdRef.current ?? ""}:sel:${packageId}`,
+      });
+      onSelectPackage?.(packageId);
+    },
+    [onSelectPackage, report, productOf]
+  );
+
+  const { onPurchase } = props;
+  // Rises per attempt so a retry after a failure is its own occurrence rather
+  // than being absorbed as a duplicate of the first try.
+  const attemptRef = React.useRef(0);
+  const handlePurchase = React.useMemo(
+    () => (packageId: string) => {
+      const attempt = ++attemptRef.current;
+      const productId = productOf(packageId);
+      const occurrence = `${viewIdRef.current ?? ""}:buy:${attempt}`;
+      report("purchase_started", { productId, eventId: occurrence });
+      const settle = (outcome: PaywallPurchaseOutcome | void) => {
+        // `completed` lands as purchase.completed through registerPurchase —
+        // reporting it here too would double-count the sale.
+        if (!outcome || outcome.status === "completed") return;
+        report(
+          outcome.status === "cancelled"
+            ? "purchase_abandoned"
+            : "purchase_failed",
+          {
+            productId,
+            code: outcome.code,
+            message: outcome.message,
+            eventId: occurrence,
+          }
+        );
+      };
+      let returned: ReturnType<RevnixPaywallProps["onPurchase"]>;
+      try {
+        returned = onPurchase(packageId);
+      } catch (err) {
+        // A host that throws synchronously has failed the purchase as surely
+        // as one whose promise rejects.
+        settle({ status: "failed", message: messageOf(err) });
+        throw err;
+      }
+      if (returned && typeof (returned as Promise<unknown>).then === "function") {
+        void (returned as Promise<PaywallPurchaseOutcome | void>).then(
+          settle,
+          (err: unknown) => settle({ status: "failed", message: messageOf(err) })
+        );
+        return;
+      }
+      settle(returned as PaywallPurchaseOutcome | void);
+    },
+    [onPurchase, report, productOf]
+  );
+
+  const { onRestore } = props;
+  const handleRestore = React.useMemo(
+    () =>
+      onRestore
+        ? () => {
+            report("restore");
+            onRestore();
+          }
+        : undefined,
+    [onRestore, report]
+  );
 
   // The host's dismissal runs whatever happens to the beacon — an analytics
   // failure must never trap the customer on the screen (REV-252).
@@ -255,12 +429,12 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
       <RevnixBlockPaywall
         doc={blocks}
         packages={props.packages}
-        onPurchase={props.onPurchase}
+        onPurchase={handlePurchase}
         selectedPackageId={props.selectedPackageId}
-        onSelectPackage={props.onSelectPackage}
+        onSelectPackage={handleSelect}
         highlightPackageId={config.highlightPackageId}
         heroImageUrl={config.heroImageUrl}
-        onRestore={props.onRestore}
+        onRestore={handleRestore}
         onTerms={props.onTerms}
         onPrivacy={props.onPrivacy}
         onClose={handleClose}
@@ -274,7 +448,24 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
       />
     );
   }
-  return <ClassicPaywall {...props} onClose={handleClose} />;
+  return (
+    <ClassicPaywall
+      {...props}
+      onPurchase={handlePurchase}
+      onSelectPackage={handleSelect}
+      onRestore={handleRestore}
+      onClose={handleClose}
+    />
+  );
+}
+
+/** REV-263: the text an interaction report carries for a thrown error. Kept
+ *  short — the server bounds `message` at 1024 chars and nothing groups by
+ *  it; the CODE is the field that gets aggregated. */
+function messageOf(err: unknown): string | undefined {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return undefined;
 }
 
 /** The dismiss affordance the classic layouts get (REV-252).

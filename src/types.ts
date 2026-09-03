@@ -322,3 +322,30 @@ export interface PlacementResolution {
   /** REV-157 (SDK-populated): unix ms this resolution was fetched/cached. */
   fetchedAt?: number;
 }
+
+/** REV-263: the six paywall interactions `logPaywallEvent` can report — what
+ *  the customer did on a display, between the view that opened it and the
+ *  close or purchase that ended it. The server turns each into the ledger
+ *  type `paywall.<name>`. */
+export type PaywallInteraction =
+  | "selected"
+  | "purchase_started"
+  | "purchase_abandoned"
+  | "purchase_failed"
+  | "restore"
+  | "error";
+
+/** What the host tells RevnixPaywall about a purchase it performed (REV-263).
+ *  Returning it from `onPurchase` is what lets the paywall report
+ *  `purchase_abandoned` / `purchase_failed` itself — without it the SDK sees
+ *  only that checkout STARTED, because the store call happens in the host.
+ *
+ *  `completed` needs no report of its own: the purchase lands as
+ *  `purchase.completed` through registerPurchase. */
+export interface PaywallPurchaseOutcome {
+  status: "completed" | "cancelled" | "failed";
+  /** Store error code — a StoreKit `SKError` code, a Play
+   *  `BillingResponseCode`, or whatever your layer calls it. */
+  code?: string;
+  message?: string;
+}

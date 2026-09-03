@@ -23,6 +23,8 @@ export type {
   IdentifyStrategy,
   IdentityInfo,
   PaywallConfig,
+  PaywallInteraction,
+  PaywallPurchaseOutcome,
   PlacementOffering,
   PlacementPackage,
   PlacementPaywall,

@@ -15,6 +15,7 @@ import type {
   IdentifyResult,
   IdentifyStrategy,
   IdentityInfo,
+  PaywallInteraction,
   PlacementResolution,
   RegisterPurchaseInput,
   RegisterPurchaseResult,
@@ -646,6 +647,69 @@ export class RevnixClient {
         })
       )
       .catch((err) => this.diag("logPaywallClosed", err));
+  }
+
+  /** Report one of the six paywall interactions (REV-263) — what the customer
+   *  DID on a display, between the `logPaywallShown` that opened it and the
+   *  `logPaywallClosed` (or purchase) that ended it:
+   *
+   *    - `selected` — a package was picked
+   *    - `purchase_started` — checkout was started
+   *    - `purchase_abandoned` — the customer backed out at the store sheet
+   *    - `purchase_failed` — the store refused the payment
+   *    - `restore` — restore purchases was tapped
+   *    - `error` — the paywall itself failed (config, products, render)
+   *
+   *  Fire-and-forget like the other beacons: never blocks, never throws.
+   *
+   *  `viewId` is the id `logPaywallShown` returned for THIS display. Passing
+   *  it is what threads the whole life of one impression together and puts
+   *  the event on the paywall's own analytics row — a fresh id still records
+   *  the event, it just cannot be tied back to the display.
+   *
+   *  RevnixPaywall reports `selected`, `purchase_started`, `restore` and a
+   *  no-products `error` for you. The purchase OUTCOME is yours: only the
+   *  host performs the store call, so report `purchase_abandoned` /
+   *  `purchase_failed` from your own StoreKit / Play error handling — or let
+   *  RevnixPaywall do it by returning the outcome from `onPurchase`.
+   *
+   *  `eventId` is the idempotency key and defaults to the display's `viewId`,
+   *  which caps the report at one per display per event type. Pass one per
+   *  occurrence (and reuse it across your own retries) to record every
+   *  occurrence — e.g. a customer who fails, retries and fails again. */
+  logPaywallEvent(
+    event: PaywallInteraction,
+    viewId: string,
+    options?: {
+      placementKey?: string;
+      paywallId?: string;
+      productId?: string;
+      /** Store error code — `purchase_failed` / `error`. */
+      code?: string;
+      message?: string;
+      /** Idempotency key for this occurrence; defaults to `viewId`. */
+      eventId?: string;
+    }
+  ): void {
+    void this.customerIdPromise
+      .then((customerId) =>
+        this.request("POST", "/v1/paywalls/events", {
+          customerId,
+          viewId,
+          event,
+          occurredAt: Date.now(),
+          sdkVersion: SDK_VERSION,
+          ...(options?.eventId ? { eventId: options.eventId } : {}),
+          ...(options?.placementKey ? { placementKey: options.placementKey } : {}),
+          ...(options?.paywallId ? { paywallId: options.paywallId } : {}),
+          ...(options?.productId ? { productId: options.productId } : {}),
+          ...(options?.code ? { code: options.code } : {}),
+          ...(options?.message
+            ? { message: options.message.slice(0, 1024) }
+            : {}),
+        })
+      )
+      .catch((err) => this.diag("logPaywallEvent", err));
   }
 
   /** Set attributes on the current customer (REV-033 v2). Attributes are what
