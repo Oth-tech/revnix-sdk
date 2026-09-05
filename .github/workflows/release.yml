@@ -1,0 +1,245 @@
+# Release revnix-react to npm.
+#
+# Dispatched by revnix-app's "Release SDKs" workflow on every merge to its
+# main, and runnable by hand. One run = one version: it moves `## Unreleased`
+# in CHANGELOG.md into a dated entry, bumps package.json / package-lock.json /
+# src/version.ts, lands that through a pull request (the org ruleset gives
+# main merge commits only and no direct pushes, so there is no other way in),
+# publishes the merge commit, then tags it and cuts a GitHub release.
+#
+# The version always moves, even when nothing changed since the last tag —
+# the SDKs track revnix-app releases in lockstep by decision (2026-09-05).
+# A lockstep bump says so in the changelog entry it writes.
+#
+# Publishing uses npm trusted publishing (OIDC): no long-lived token. The
+# package's trusted publisher on npmjs.com must name this repo and this file.
+# An NPM_TOKEN secret, if present, is used instead — for a break-glass
+# publish only.
+
+name: Release
+run-name: "Release ${{ inputs.run_key || format('manual-{0}', github.run_id) }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump. auto reads the Unreleased section of CHANGELOG.md."
+        type: choice
+        options: [auto, major, minor, patch]
+        default: auto
+      app_sha:
+        description: "revnix-app commit this release rides on (recorded in the changelog)."
+        type: string
+        default: ""
+      run_key:
+        description: "Caller's correlation key; becomes the run name so the caller can find this run."
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+# One release at a time. A second dispatch queues behind the first so two
+# runs can never bump from the same base version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Trusted publishing needs npm ≥ 11.5.1; the runner's bundled npm may be older.
+      - name: Update npm
+        run: npm install -g npm@latest && npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and test main before touching it
+        run: |
+          npm run typecheck
+          npm test
+
+      # A previous run may have merged the bump and then failed to publish
+      # (trusted publisher not configured, npm outage). main is then one
+      # version ahead of npm with no tag. Publish that version instead of
+      # bumping past it and leaving a hole in the sequence.
+      - name: Is main already ahead of npm?
+        id: pending
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          CURRENT=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$CURRENT" version 2>/dev/null | grep -q .; then
+            echo "$NAME@$CURRENT is on npm; a normal release follows."
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::$NAME@$CURRENT is on main but not on npm — publishing it instead of bumping."
+            node scripts/release.mjs --notes-for "$CURRENT" --notes-out "$RUNNER_TEMP/release-notes.md"
+            {
+              echo "pending=true"
+              echo "version=$CURRENT"
+              echo "sha=$(git rev-parse HEAD)"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Has the code moved since the last release?
+        if: steps.pending.outputs.pending != 'true'
+        id: changed
+        run: |
+          CURRENT=$(node -p "require('./package.json').version")
+          if git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null; then
+            if git diff --quiet "v$CURRENT" HEAD -- . ':(exclude)CHANGELOG.md'; then
+              CHANGED=false
+            else
+              CHANGED=true
+            fi
+            echo "Since v$CURRENT: changed=$CHANGED"
+          else
+            CHANGED=true
+            echo "No tag v$CURRENT to compare against; treating the tree as changed."
+          fi
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+
+      - name: Decide and apply the next version
+        if: steps.pending.outputs.pending != 'true'
+        id: version
+        run: |
+          node scripts/release.mjs \
+            --bump "${{ inputs.bump }}" \
+            --app-sha "${{ inputs.app_sha }}" \
+            --changed "${{ steps.changed.outputs.changed }}" \
+            --notes-out "$RUNNER_TEMP/release-notes.md"
+
+      - name: Refuse to reuse a version that already exists
+        if: steps.pending.outputs.pending != 'true'
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          if npm view "$NAME@$NEXT" version >/dev/null 2>&1; then
+            echo "::error::$NAME@$NEXT is already on npm. Bump package.json past it and re-run."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$NEXT" >/dev/null 2>&1; then
+            echo "::error::Tag v$NEXT already exists. Bump package.json past it and re-run."
+            exit 1
+          fi
+
+      # version.test.ts pins src/version.ts to package.json.
+      - name: Test the bumped tree
+        if: steps.pending.outputs.pending != 'true'
+        run: npm test
+
+      - name: Land the bump through a pull request (main takes merge commits only)
+        if: steps.pending.outputs.pending != 'true'
+        id: land
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+          SUMMARY: ${{ steps.version.outputs.summary }}
+        run: |
+          BRANCH="release/v$NEXT"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "Release $NEXT" -m "$SUMMARY"
+          git push origin "$BRANCH"
+          PR_URL=$(gh pr create --base main --head "$BRANCH" \
+            --title "Release $NEXT" --body-file "$RUNNER_TEMP/release-notes.md")
+          echo "Opened $PR_URL"
+          # Mergeability is computed asynchronously; give it a few tries.
+          MERGED=""
+          for i in 1 2 3 4 5 6; do
+            if gh pr merge "$PR_URL" --merge --delete-branch; then MERGED=1; break; fi
+            sleep 10
+          done
+          if [ -z "$MERGED" ]; then
+            echo "::error::Could not merge $PR_URL — nothing was published."
+            exit 1
+          fi
+          git fetch origin main
+          git checkout -q origin/main
+          LANDED=$(node -p "require('./package.json').version")
+          if [ "$LANDED" != "$NEXT" ]; then
+            echo "::error::main carries $LANDED after the merge, expected $NEXT."
+            exit 1
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "pr=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve what to publish
+        id: pub
+        env:
+          PENDING: ${{ steps.pending.outputs.pending }}
+        run: |
+          if [ "$PENDING" = "true" ]; then
+            echo "next=${{ steps.pending.outputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "sha=${{ steps.pending.outputs.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "next=${{ steps.version.outputs.next }}" >> "$GITHUB_OUTPUT"
+            echo "sha=${{ steps.land.outputs.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=\${NPM_TOKEN}" > ~/.npmrc
+            echo "Publishing with NPM_TOKEN."
+          else
+            echo "Publishing with trusted publishing (OIDC)."
+          fi
+          npm ci
+          npm publish --access public
+
+      - name: Tag and release
+        env:
+          NEXT: ${{ steps.pub.outputs.next }}
+          SHA: ${{ steps.pub.outputs.sha }}
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          git tag -a "v$NEXT" -m "$NAME $NEXT" "$SHA"
+          git push origin "v$NEXT"
+          gh release create "v$NEXT" --target "$SHA" --title "$NAME $NEXT" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      - name: Summary
+        if: always()
+        env:
+          CURRENT: ${{ steps.version.outputs.current }}
+          NEXT: ${{ steps.pub.outputs.next }}
+          LEVEL: ${{ steps.version.outputs.level }}
+          LOCKSTEP: ${{ steps.version.outputs.lockstep }}
+          PR: ${{ steps.land.outputs.pr }}
+          PENDING: ${{ steps.pending.outputs.pending }}
+          APP_SHA: ${{ inputs.app_sha }}
+        run: |
+          {
+            echo "## revnix-react ${NEXT:-?}"
+            echo ""
+            if [ "$PENDING" = "true" ]; then
+              echo "- published the version already on main (a previous run merged it but did not publish)"
+            else
+              echo "- from ${CURRENT:-?} (${LEVEL:-?} bump, lockstep=${LOCKSTEP:-?})"
+            fi
+            [ -n "$PR" ] && echo "- release PR: $PR"
+            [ -n "$APP_SHA" ] && echo "- revnix-app: $APP_SHA"
+            echo "- status: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
