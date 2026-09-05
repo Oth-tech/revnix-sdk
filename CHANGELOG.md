@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.0 (2026-09-05)
+
 ### Added
 
 - `logPaywallEvent(event, viewId, options?)` reports one of the six paywall
