@@ -330,13 +330,21 @@ device.
 The SDK swallows failures it can recover from (retry-queue drains, placement
 prefetches, install and paywall-view reports, storage read/write errors). `onDiagnostic` surfaces them: it is called with `{ op, error, at }` for every
 such failure (ops: `retryPendingPurchases`, `prefetchPlacement`,
-`waitForEntitlements`, `reportInstall`, `logPaywallShown`, `storageRead`,
-`storageWrite`); exceptions thrown by your callback are swallowed. The count
-of background failures since the last report also rides the next request as
-an `X-Revnix-Bg-Failures: <n>` header, so the backend can see silent client
-pain without any app-side wiring. One related guard: a 200 response with a
+`waitForEntitlements`, `reportInstall`, `logPaywallShown`, `logPaywallClosed`,
+`logPaywallEvent`, `paywall.render`, `storageRead`, `storageWrite`);
+exceptions thrown by your callback are swallowed. The count of background
+failures since the last report also rides the next request as an
+`X-Revnix-Bg-Failures: <n>` header, so the backend can see silent client pain
+without any app-side wiring. One related guard: a 200 response with a
 non-JSON body (captive portal, misbehaving proxy) throws a *retryable*
 `RevnixError` instead of returning garbage.
+
+`paywall.render` is the one op nothing on the network produces: a block
+paywall reporting a paint string it could not read — a gradient, a clip, a
+tile size this build does not draw. `RevnixPaywall` routes those through
+`client.reportRenderDiagnostic(message)`, so a host that already wired
+`onDiagnostic` sees render fallbacks with no new wiring. Call it yourself only
+if you are drawing paywall blocks with your own renderer.
 
 ## Errors
 
@@ -395,6 +403,18 @@ if (!paywall || !offering) return null; // both are nullable; guard first
 
 - Pass `client` to report a `paywall.viewed` event once per mount (opt out
   with `disableViewTracking`); or call `client.logPaywallShown()` yourself, it's fire-and-forget and never throws.
+- Report the **end** of the display too: `logPaywallShown()` hands back the
+  `viewId` it minted, and `client.logPaywallClosed(viewId, …)` closes that one
+  display. The shared id is what makes it idempotent, so a retry or a
+  double-dismiss can never count two. Without the close, a funnel knows how
+  many saw the paywall but not how many left without buying.
+- `client.logPaywallEvent(event, viewId, options?)` reports what happened **in
+  between** — one of six: `selected`, `purchase_started`,
+  `purchase_abandoned`, `purchase_failed`, `restore`, `error`. `RevnixPaywall`
+  sends `selected`, `purchase_started`, `restore` and a no-products `error`
+  for you; the purchase *outcome* is yours, because your app performs the
+  store call. All six are pure ledger history: over-reporting can skew a
+  report, never grant or revoke access.
 - Theming: dark by default, `config.mode: "light"` switches to the light
   theme; override any token via the `theme` prop
   (`DEFAULT_PAYWALL_THEME` / `LIGHT_PAYWALL_THEME` are exported).
@@ -414,6 +434,8 @@ load `react` / `react-native` (both are peer dependencies used only by `/ui`).
 | `resolvePlacement` | `GET /v1/placements/{key}/offering` | any |
 | install report | `POST /v1/installs` | any |
 | `logPaywallShown` | `POST /v1/paywalls/viewed` | any |
+| `logPaywallClosed` | `POST /v1/paywalls/closed` | any |
+| `logPaywallEvent` | `POST /v1/paywalls/events` | any |
 | `setAttributes` | `POST /v1/customers/{id}/attributes` | any |
 | `identify` | `POST /v1/identify` | secret |
 | `alias` | `POST /v1/customers/{id}/alias` | secret |
