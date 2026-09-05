@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "Revnix SDK for React, React Native & Next.js — purchase registration, entitlements, identity, and placements over the Revnix /v1 API.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Oth-tech/revnix-sdk.git"
+  },
   "keywords": [
     "revnix",
     "react-native",
