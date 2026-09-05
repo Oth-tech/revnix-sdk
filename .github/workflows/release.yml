@@ -214,6 +214,12 @@ jobs:
           NEXT: ${{ steps.pub.outputs.next }}
           SHA: ${{ steps.pub.outputs.sha }}
         run: |
+          # An annotated tag needs a committer identity. The "land" step sets
+          # one, but that step is skipped on the "main is already ahead of
+          # npm" path — which is exactly the run that has just published and
+          # must not fail here. Set it unconditionally.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           NAME=$(node -p "require('./package.json').name")
           git tag -a "v$NEXT" -m "$NAME $NEXT" "$SHA"
           git push origin "v$NEXT"
