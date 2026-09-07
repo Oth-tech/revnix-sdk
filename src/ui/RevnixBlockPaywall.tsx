@@ -58,6 +58,7 @@ import {
   coverPlacement,
   type ResolvedBackgroundImage,
 } from "../blocks/background.js";
+import { detectLocale, localizeBlockDoc } from "../blocks/locale.js";
 import { resolveTags } from "../blocks/tags.js";
 import {
   canvasMetrics,
@@ -114,6 +115,13 @@ export type RevnixBlurComponent = React.ComponentType<RevnixBlurProps>;
 
 export interface RevnixBlockPaywallProps {
   doc: PaywallBlockDoc;
+  /** REV-271: which language to draw the design's copy in. Omitted, the
+   *  device's own is detected; a host that already knows its in-app language
+   *  (an app with its own language switch) passes it so the paywall follows
+   *  the app rather than the OS. A paywall with no translations ignores this
+   *  entirely, and any string the chosen language does not translate falls
+   *  back to the authored copy — never to blank. */
+  locale?: string;
   packages: RevnixPaywallPackage[];
   onPurchase: (packageId: string) => void;
   selectedPackageId?: string;
@@ -1216,7 +1224,15 @@ function Block({
 }
 
 export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
-  const { doc, packages } = props;
+  const { packages } = props;
+  // REV-271: the language overlay is applied ONCE, here, so every renderer
+  // path below reads plain strings and cannot forget to localize one. Memoized
+  // on the doc and the locale because it rebuilds the tree, and the renderer
+  // re-runs on every selection tap.
+  const doc = React.useMemo(
+    () => localizeBlockDoc(props.doc, props.locale ?? detectLocale()),
+    [props.doc, props.locale]
+  );
 
   const [internalSelected, setInternalSelected] = React.useState<
     string | undefined
