@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- **Device attribute contract.** Every `resolvePlacement()` now carries the
+  device facts — platform, OS version, app version, locale, currency,
+  storefront country, model, install date, SDK version, sandbox, first open —
+  in an `X-Revnix-Device` header. The server evaluates targeting rules and
+  audiences against them on that request and stores them on the customer as
+  reserved `device.*` attributes. In a browser the SDK detects platform, OS
+  version and locale itself; pass the rest (and everything, under React
+  Native) as `configure({ device: { … } })`, or `device: false` to send
+  nothing. `installedAt` is persisted on first launch; `firstOpen` is true for
+  that whole first session. Not sent for an ephemeral anonymous id. (REV-268)
+- `DeviceFacts` type; `DEVICE_HEADER` and `encodeDeviceHeader` exports.
+
+### Changed
+
+- `installMetadata` is superseded by `device` (both still feed the install
+  report).
+
 ## 1.1.0 (2026-09-05)
 
 ### Added

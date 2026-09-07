@@ -13,9 +13,11 @@ export {
 export { purchaseInputFromIap, type IapPurchase } from "./iap.js";
 export { memoryStorage, generateAnonymousId } from "./storage.js";
 export { SDK_VERSION } from "./version.js";
+export { DEVICE_HEADER, encodeDeviceHeader } from "./device.js";
 export type {
   AliasResult,
   CustomerEntitlements,
+  DeviceFacts,
   Entitlement,
   EntitlementSource,
   Environment,

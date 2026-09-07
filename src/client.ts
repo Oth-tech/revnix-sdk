@@ -7,9 +7,17 @@ import {
   RevnixTimeoutError,
 } from "./errors.js";
 import { generateAnonymousId, generateViewId, resolveStorage } from "./storage.js";
+import {
+  DEVICE_HEADER,
+  INSTALLED_AT_KEY,
+  compactPayload,
+  detectDeviceFacts,
+  encodeDeviceHeader,
+} from "./device.js";
 import { SDK_VERSION } from "./version.js";
 import type {
   AliasResult,
+  DeviceFacts,
   RevnixDiagnostic,
   CustomerEntitlements,
   IdentifyResult,
@@ -101,6 +109,10 @@ export class RevnixClient {
     platform?: string;
     appVersion?: string;
   };
+  // REV-268: the encoded X-Revnix-Device value, built once per client. Null
+  // when the app opted out (`device: false`). Resolved asynchronously because
+  // installedAt/firstOpen come from storage, which may be async.
+  private readonly deviceHeaderPromise: Promise<string | null>;
   private readonly requestTimeoutMs: number;
   private readonly readYourWritesDelaysMs: number[];
   private readonly offlineMaxCacheAgeMs: number;
@@ -143,6 +155,7 @@ export class RevnixClient {
     this.reportInstalls = (config.reportInstalls ?? true) && resolved.persistent;
     this.persistentStorage = resolved.persistent;
     this.installMetadata = config.installMetadata;
+    this.deviceHeaderPromise = this.buildDeviceHeader(config.device);
     this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.offlineMaxCacheAgeMs =
       config.offlineMaxCacheAgeMs ?? DEFAULT_OFFLINE_MAX_CACHE_AGE_MS;
@@ -554,11 +567,21 @@ export class RevnixClient {
       // user between variants; the server serves the placement default
       // when no customer is identified (same guard class as M5 installs).
       const path = `/v1/placements/${encodeURIComponent(placementKey)}/offering`;
+      // REV-268: the device facts ride along so the server can evaluate
+      // targeting rules against THIS device on THIS request, and store them
+      // as device.* attributes. Not sent for an ephemeral anon id: the server
+      // would have no customer to keep them on, and it serves such callers
+      // the untargeted default anyway.
+      const deviceHeader = this.ephemeralAnonId
+        ? null
+        : await this.deviceHeaderPromise;
       const fresh = await this.request<PlacementResolution>(
         "GET",
         this.ephemeralAnonId
           ? path
-          : `${path}?customer=${encodeURIComponent(customerId)}`
+          : `${path}?customer=${encodeURIComponent(customerId)}`,
+        undefined,
+        deviceHeader ? { [DEVICE_HEADER]: deviceHeader } : undefined
       );
       await this.writePlacementCache(placementKey, fresh, customerId);
       return { ...fresh, stale: false, fetchedAt: Date.now() };
@@ -807,6 +830,67 @@ export class RevnixClient {
     }).catch((err) => this.diag("reportInstall", err));
   }
 
+  /** REV-268: assemble and encode the device facts once. Runtime-detected
+   *  facts first, the app's `device` over them, then the three the SDK owns.
+   *  `installedAt` is the first launch this storage ever saw — written on
+   *  that launch and read back on every later one — and `firstOpen` is true
+   *  for the whole of that first session. Both are skipped on non-persistent
+   *  storage: memory-only storage would make every launch a first open,
+   *  which is the same phantom-new-customer hazard the M5 install guard
+   *  exists for. */
+  private async buildDeviceHeader(
+    configured: DeviceFacts | false | undefined
+  ): Promise<string | null> {
+    if (configured === false) return null;
+    const facts: DeviceFacts = {
+      ...detectDeviceFacts(),
+      // Pre-REV-268 apps described the device for the install report only;
+      // those two facts are still true facts, so they count.
+      ...(this.installMetadata?.platform !== undefined
+        ? { platform: this.installMetadata.platform }
+        : {}),
+      ...(this.installMetadata?.appVersion !== undefined
+        ? { appVersion: this.installMetadata.appVersion }
+        : {}),
+      ...(configured ?? {}),
+    };
+    let installedAt: number | undefined;
+    let firstOpen: boolean | undefined;
+    if (this.persistentStorage) {
+      try {
+        const stored = await this.storage.getItem(INSTALLED_AT_KEY);
+        const parsed = stored === null ? NaN : Number(stored);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          installedAt = parsed;
+          firstOpen = false;
+        } else {
+          installedAt = Date.now();
+          firstOpen = true;
+          await this.storage.setItem(INSTALLED_AT_KEY, String(installedAt));
+        }
+      } catch (err) {
+        // Storage trouble costs the two SDK-owned facts, nothing else.
+        this.diag("storageWrite", err);
+        installedAt = undefined;
+        firstOpen = undefined;
+      }
+    }
+    return encodeDeviceHeader(
+      compactPayload({
+        ...facts,
+        sdkVersion: SDK_VERSION,
+        installedAt,
+        firstOpen,
+      })
+    );
+  }
+
+  /** REV-268: the decoded facts this client sends — for tests and for apps
+   *  that want to show what Revnix knows. `null` when disabled. */
+  async getDeviceHeader(): Promise<string | null> {
+    return this.deviceHeaderPromise;
+  }
+
   private async setCustomerId(customerId: string): Promise<void> {
     // Callers pass stable ids (identify/canonical adoption) — logout()
     // re-flags its generated anon id itself.
@@ -1014,7 +1098,8 @@ export class RevnixClient {
   private async request<T>(
     method: "GET" | "POST",
     path: string,
-    body?: unknown
+    body?: unknown,
+    extraHeaders?: Record<string, string>
   ): Promise<T> {
     // C7: abort the request after requestTimeoutMs so a slow or dead backend
     // can't hang the app. AbortController is guarded for very old runtimes.
@@ -1042,6 +1127,7 @@ export class RevnixClient {
             ? { "X-Revnix-Bg-Failures": String(reportedBgFailures) }
             : {}),
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+          ...(extraHeaders ?? {}),
         },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         ...(controller ? { signal: controller.signal } : {}),
