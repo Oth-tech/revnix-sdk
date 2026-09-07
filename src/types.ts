@@ -29,8 +29,20 @@ export interface RevnixConfig {
    *  generated — powers the dashboard's Installs / install-conversion charts.
    *  Fire-and-forget; never blocks startup. Defaults to true. */
   reportInstalls?: boolean;
-  /** Optional device context attached to the install report. */
+  /** Optional device context attached to the install report. Superseded by
+   *  `device` (REV-268), which feeds the install report too; kept so
+   *  existing configurations keep working. */
   installMetadata?: { platform?: string; appVersion?: string };
+  /** REV-268: facts about the device, sent with every placement resolve so
+   *  targeting rules ("US storefront", "app version at least 3") can be
+   *  evaluated on the request that serves the paywall, and stored on the
+   *  customer as reserved `device.*` attributes visible in the dashboard.
+   *
+   *  In a browser the SDK detects platform, OS version and locale itself;
+   *  everything else — and everything, under React Native — comes from
+   *  here (react-native-device-info has all of it). Fields you leave out are
+   *  simply not reported. Pass `false` to send nothing at all. */
+  device?: DeviceFacts | false;
   /** C7: per-request timeout in ms (AbortController-based). Defaults to 10000.
    *  A slow or dead backend then fails fast with RevnixTimeoutError instead of
    *  hanging the app until the OS TCP timeout (60–120s+). */
@@ -56,6 +68,30 @@ export interface RevnixConfig {
    *  no signal anywhere. Wire this to your crash/analytics reporter. Must
    *  not throw; exceptions from it are swallowed. */
   onDiagnostic?: (event: RevnixDiagnostic) => void;
+}
+
+/** REV-268: the app-suppliable half of the device attribute contract. The
+ *  SDK adds `sdkVersion`, `installedAt` and `firstOpen` itself. Every field
+ *  is optional; the server normalizes case, locale separators and
+ *  alpha-3 storefronts, so pass what the platform gives you. */
+export interface DeviceFacts {
+  /** "ios", "android", "web", … — lowercase family name. */
+  platform?: string;
+  /** e.g. "18.1". */
+  osVersion?: string;
+  /** The host app's version string, e.g. "1.2.10". The server derives a
+   *  zero-padded sortable form (`device.appVersionPadded`) from it. */
+  appVersion?: string;
+  /** "en-US" or "en_US" — either separator. */
+  locale?: string;
+  /** ISO 4217, e.g. "USD". */
+  currency?: string;
+  /** App Store / Play storefront country — alpha-2 ("US") or alpha-3 ("USA"). */
+  storefront?: string;
+  /** Hardware model identifier, e.g. "iPhone15,3". */
+  model?: string;
+  /** True in a sandbox / debug build. */
+  sandbox?: boolean;
 }
 
 /** REV-200 (M26): one background failure. */

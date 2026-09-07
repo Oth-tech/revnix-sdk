@@ -67,7 +67,8 @@ have full access.
 | `entitlementsTtlMs` | `30000` | In-memory soft TTL on `getEntitlements()`/`isEntitled()`: a server read younger than this answers repeat calls from memory. `0` restores always-fetch |
 | `offlineMaxCacheAgeMs` | 14 days | Max age of a cache-served entitlements snapshot; older snapshots serve every entitlement as `isActive: false` |
 | `reportInstalls` | `true` | `POST /v1/installs` on first launch (forced off on non-persistent storage) |
-| `installMetadata` | n/a | `{ platform?, appVersion? }` attached to the install report |
+| `installMetadata` | n/a | `{ platform?, appVersion? }` attached to the install report (superseded by `device`) |
+| `device` | detected | `{ platform?, osVersion?, appVersion?, locale?, currency?, storefront?, model?, sandbox? }` sent with every placement resolve as `X-Revnix-Device`, evaluated by targeting rules on that request and stored as `device.*` attributes. Browser detects platform/OS/locale; React Native apps pass what `react-native-device-info` gives them. `false` disables |
 | `prefetchPlacements` | n/a | Placement keys resolved-and-cached at construction (fire-and-forget), so the session's first paywall renders even offline |
 | `onDiagnostic` | n/a | Callback invoked on every swallowed background failure (retry drains, prefetches, install/paywall reports, storage errors); see Diagnostics |
 | `fetch` | global fetch | Custom fetch (tests, polyfills) |
