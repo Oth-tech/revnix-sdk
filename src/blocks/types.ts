@@ -308,6 +308,14 @@ export interface PaywallBlockDoc {
   accentInk: string;
   fontFamily?: string;
   blocks: PaywallBlock[];
+  /** REV-271: the language the blocks' own copy is written in. Absent = "en".
+   *  Never a key in `locales` — the tree IS that language's version. */
+  defaultLocale?: string;
+  /** REV-271: translations, keyed by BCP-47 tag then by block string key
+   *  (`<blockId>.text`, `<blockId>.items.0.title`, …). Only words differ per
+   *  language; styles, layout and ids are shared. `RevnixBlockPaywall`
+   *  applies the right one — see ./locale.ts. */
+  locales?: Record<string, Record<string, string>>;
 }
 
 /** The device screen `canvas` designs are authored against. */

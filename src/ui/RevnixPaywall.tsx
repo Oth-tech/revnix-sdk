@@ -227,6 +227,18 @@ export interface RevnixPaywallProps {
    *  reports to that client's own `onDiagnostic`, so most apps need neither —
    *  this is for a host that renders a paywall without a client. */
   onDiagnostic?: (message: string) => void;
+  /** REV-271: which language to draw a DESIGNED paywall's copy in. Omitted,
+   *  the device's own is detected — which is what makes the paywall match the
+   *  rest of the app on a phone with no in-app language switch. Pass one when
+   *  the app HAS such a switch, so the paywall follows the app rather than the
+   *  OS: a user reading the app in Spanish on an English phone must not be
+   *  handed an English paywall. A paywall with no translations ignores this,
+   *  and any string the chosen language does not translate falls back to the
+   *  authored copy rather than rendering blank.
+   *
+   *  Only designed (block) paywalls are localized; the classic template
+   *  layouts below render `config`'s own copy whatever this says. */
+  locale?: string;
 }
 
 export function RevnixPaywall(props: RevnixPaywallProps) {
@@ -442,6 +454,7 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
         gradient={props.gradient}
         blur={props.blur}
         fontFamilyMap={props.fontFamilyMap}
+        locale={props.locale}
         onDiagnostic={renderDiagnostic}
         style={props.style}
         loading={props.loading}

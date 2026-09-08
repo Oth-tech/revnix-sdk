@@ -31,5 +31,11 @@ export {
   type PaywallBackground,
   type PaywallBackgroundSpec,
 } from "../blocks/background.js";
+export {
+  detectLocale,
+  localeChain,
+  localizeBlockDoc,
+  normalizeLocale,
+} from "../blocks/locale.js";
 export { minorUnitsForCurrency, resolveTags } from "../blocks/tags.js";
 export type { FontFamilyMap, FontMapping } from "../blocks/style.js";
