@@ -15,8 +15,18 @@ import {
   encodeDeviceHeader,
 } from "./device.js";
 import { SDK_VERSION } from "./version.js";
+import {
+  browserLifecycle,
+  DEFAULT_SESSION_TIMEOUT_MS,
+  IMPLICIT_CONFIG_RETRY_MS,
+  IMPLICIT_PLACEMENTS,
+  type ImplicitPlacement,
+  type RevnixAppState,
+  type RevnixLifecycle,
+} from "./implicit.js";
 import type {
   AliasResult,
+  ImplicitResolution,
   DeviceFacts,
   RevnixDiagnostic,
   CustomerEntitlements,
@@ -130,6 +140,46 @@ export class RevnixClient {
   // and prefetching alongside its successor.
   private disposed = false;
   private customerIdPromise: Promise<string>;
+  // REV-272: implicit placements. Off unless the host said what to do with a
+  // paywall — without a handler there is nothing to do with the answer, and
+  // firing anyway would spend requests and ledger rows on nobody's behalf.
+  private readonly onImplicitPaywall?: RevnixConfig["onImplicitPaywall"];
+  private readonly implicitEnabled: boolean;
+  private readonly sessionTimeoutMs: number;
+  /** Which of the six this app has configured, fetched ONCE. The whole cost
+   *  story: an app that configured none never resolves an implicit placement
+   *  again for the rest of the session. */
+  private implicitConfigPromise: Promise<ReadonlySet<string>> | null = null;
+  /** After a FAILED config read, no request is made again before this. An
+   *  offline launch must not cost a fresh /v1/config on every paywall close
+   *  and every deep link — but "the next launch" is too long to wait for a
+   *  deep link opened an hour later on good network. One minute is the
+   *  middle: a burst of interactions costs one probe, a real recovery is
+   *  noticed within the minute. */
+  private implicitConfigRetryAt = 0;
+  private lifecycleUnsubscribe: (() => void) | null = null;
+  /** The cold-start batch while it runs, resolving to whether it presented a
+   *  paywall. A deep link delivered on the first frame — SwiftUI's onOpenURL,
+   *  RN's getInitialURL — must wait for it, or the customer gets the launch
+   *  paywall AND the link paywall stacked. Null once the batch is over. */
+  private launchBatch: Promise<boolean> | null = null;
+  /** When the app last went to the BACKGROUND, or null while it has not.
+   *  A return after `sessionTimeoutMs` away is a new session; anything sooner
+   *  is an app switch. Measured from the background transition, not from the
+   *  last return — the latter would mint a session after 35 minutes of
+   *  continuous use plus a three-second switch. */
+  private lastBackgroundAt: number | null = null;
+  /** LOOP GUARD: view ids of displays that came FROM an implicit trigger. A
+   *  paywall shown because a paywall was dismissed must not itself fire
+   *  `paywall_decline`, or the customer is handed the same screen forever.
+   *  Recognised from the placementKey the host reports on logPaywallShown —
+   *  a host that reports no placementKey cannot be protected here, which is
+   *  why the server keeps its own same-paywall backstop. */
+  private readonly implicitViewIds = new Set<string>();
+  /** True when this launch generated a fresh anonymous id — the same signal
+   *  /v1/installs uses, and independent of the device header (which an app
+   *  can turn off entirely). */
+  private freshInstall = false;
 
   constructor(config: RevnixConfig) {
     if (!config.apiKey) throw new Error("Revnix: apiKey is required");
@@ -178,6 +228,15 @@ export class RevnixClient {
         this.diag("prefetchPlacement", err)
       );
     }
+    // REV-272: the six moments. Started last so a slow /v1/config can never
+    // delay the calls above, and fire-and-forget throughout — an implicit
+    // paywall that fails to resolve costs the paywall, never the launch.
+    this.onImplicitPaywall = config.onImplicitPaywall;
+    this.implicitEnabled =
+      config.implicitPlacements ?? config.onImplicitPaywall !== undefined;
+    this.sessionTimeoutMs =
+      config.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
+    if (this.implicitEnabled) this.startImplicit(config.lifecycle);
   }
 
   /** The id every call is made as: the stored identified/canonical id, or a
@@ -630,6 +689,18 @@ export class RevnixClient {
     paywallId?: string;
   }): string {
     const viewId = generateViewId();
+    // REV-272 LOOP GUARD: a display whose placement is one of the six came
+    // FROM an implicit trigger, so its dismissal must not fire another one —
+    // otherwise "show a win-back when a paywall is declined" hands the
+    // customer the same screen until they force-quit. Remembered here rather
+    // than asked of the host, because the host already tells us the placement.
+    if (
+      this.implicitEnabled &&
+      options?.placementKey !== undefined &&
+      (IMPLICIT_PLACEMENTS as readonly string[]).includes(options.placementKey)
+    ) {
+      this.implicitViewIds.add(viewId);
+    }
     void this.customerIdPromise
       .then((customerId) =>
         this.request("POST", "/v1/paywalls/viewed", {
@@ -653,7 +724,13 @@ export class RevnixClient {
    *  events then share a view id, so a reader can pair them, and the gap
    *  between their timestamps is the customer's dwell on the screen. Calling
    *  it with a fresh id still records a dismissal; it just cannot be tied
-   *  back to the display it ended. RevnixPaywall does all of this for you. */
+   *  back to the display it ended. RevnixPaywall does all of this for you.
+   *
+   *  A close is a DECLINE. Do not report one for a display that ended in a
+   *  purchase — with implicit placements on, a close is also the
+   *  `paywall_decline` moment, and a win-back offer seconds after a successful
+   *  purchase is the one thing an operator never means. RevnixPaywall only
+   *  reports the close affordances, never a purchase-driven dismissal. */
   logPaywallClosed(
     viewId: string,
     options?: { placementKey?: string; paywallId?: string }
@@ -670,6 +747,10 @@ export class RevnixClient {
         })
       )
       .catch((err) => this.diag("logPaywallClosed", err));
+    // REV-272: the dismissal IS the `paywall_decline` moment. No second ledger
+    // event — the server reuses the paywall.closed just reported — so this is
+    // only the resolve that decides whether anything is attached to it.
+    this.fireImplicitFromPaywall("paywall_decline", viewId, options?.paywallId);
   }
 
   /** Report one of the six paywall interactions (REV-263) — what the customer
@@ -733,6 +814,39 @@ export class RevnixClient {
         })
       )
       .catch((err) => this.diag("logPaywallEvent", err));
+    // REV-272: backing out of the store sheet is the `transaction_abandon`
+    // moment. Reuses the paywall.purchase_abandoned event just reported.
+    if (event === "purchase_abandoned") {
+      this.fireImplicitFromPaywall(
+        "transaction_abandon",
+        viewId,
+        options?.paywallId
+      );
+    }
+  }
+
+  /** REV-272: the two moments that happen ON a paywall, with the loop guard
+   *  applied. `fromPaywallId` travels so the server can refuse to hand back
+   *  the very paywall being dismissed — the backstop for a host that reports
+   *  no placementKey, and for an operator who pointed the rule at the source
+   *  paywall by hand. */
+  private fireImplicitFromPaywall(
+    placement: ImplicitPlacement,
+    viewId: string,
+    paywallId?: string
+  ): void {
+    if (this.implicitViewIds.has(viewId)) {
+      // One hop, never a chain: this display was itself implicit. The guard
+      // is never released: a double-tapped close reports two closes on one
+      // id (the server dedupes the event), and releasing on the first would
+      // let the second re-enter the loop. The set is bounded by implicit
+      // displays per process — a handful of ids, not a leak.
+      return;
+    }
+    this.fireImplicit(placement, {
+      fromViewId: viewId,
+      ...(paywallId ? { fromPaywallId: paywallId } : {}),
+    });
   }
 
   /** Set attributes on the current customer (REV-033 v2). Attributes are what
@@ -760,12 +874,227 @@ export class RevnixClient {
     );
   }
 
+  /** REV-272: hand the SDK the URL that opened your app, from wherever you
+   *  already receive it (Linking.getInitialURL / onNewIntent / your router).
+   *  This is the one implicit moment the SDK cannot see for itself — the URL
+   *  goes to your entry point, and an SDK intercepting it would be fighting
+   *  your router.
+   *
+   *  Fire-and-forget: never blocks, never throws, and does nothing at all
+   *  unless `deeplink_open` is configured in the dashboard. */
+  handleDeepLink(url: string): void {
+    const extra = { url: url.slice(0, 1024) };
+    const batch = this.launchBatch;
+    if (batch === null) {
+      this.fireImplicit("deeplink_open", extra);
+      return;
+    }
+    // Delivered on the first frame, while the cold-start batch is still
+    // deciding what to show: wait for it, and present only if it showed
+    // nothing. The moment is still reported either way.
+    void batch
+      .then((launchPresented) =>
+        this.triggerImplicit("deeplink_open", extra, !launchPresented)
+      )
+      .catch((err) => this.diag("implicit:deeplink_open", err));
+  }
+
+  /** REV-272: which of the six this app has configured, asked ONCE per client
+   *  and shared by every trigger after it. A failure answers "none" rather
+   *  than throwing or retrying forever — implicit placements are a bonus on
+   *  top of the app, and a /v1/config that is down must cost the bonus and
+   *  nothing else. The next launch asks again. */
+  private implicitConfig(): Promise<ReadonlySet<string>> {
+    if (this.implicitConfigPromise === null && Date.now() < this.implicitConfigRetryAt) {
+      return Promise.resolve(new Set<string>());
+    }
+    return (this.implicitConfigPromise ??= this.customerIdPromise
+      .then((customerId) =>
+        this.request<{ implicitPlacements?: string[] }>(
+          "GET",
+          // The id does not change the answer — this route is
+          // customer-independent — it only picks the server's rate-limit
+          // bucket, so one busy app cannot 429 its own fleet off the feature.
+          `/v1/config?customer=${encodeURIComponent(customerId)}`
+        )
+      )
+      .then((body) => new Set(body.implicitPlacements ?? []))
+      .catch((err) => {
+        this.diag("implicitConfig", err);
+        // Not memoised: an offline cold start must not disable every implicit
+        // moment for the rest of the session. Retried after a short hold
+        // rather than on the very next moment, so an offline burst of paywall
+        // interactions costs one probe, not one each.
+        this.implicitConfigPromise = null;
+        this.implicitConfigRetryAt = Date.now() + IMPLICIT_CONFIG_RETRY_MS;
+        return new Set<string>();
+      }));
+  }
+
+  /** REV-272: report one implicit moment and present whatever it resolves to.
+   *  Fire-and-forget in every direction — this runs on an app launch and on
+   *  every return to the foreground, so it must never be able to throw into
+   *  the host or delay a frame. */
+  private fireImplicit(
+    placement: ImplicitPlacement,
+    extra?: Record<string, string>
+  ): void {
+    void this.triggerImplicit(placement, extra, true).catch((err) =>
+      this.diag(`implicit:${placement}`, err)
+    );
+  }
+
+  /** The trigger itself. Resolves to true when a paywall was handed to the
+   *  host. `present` false still reports the moment (its ledger event is a
+   *  fact either way) but hands nothing over — how the launch batch keeps a
+   *  cold start to ONE paywall. Never throws past its caller's catch. */
+  private async triggerImplicit(
+    placement: ImplicitPlacement,
+    extra: Record<string, string> | undefined,
+    present: boolean
+  ): Promise<boolean> {
+    if (!this.implicitEnabled || this.disposed) return false;
+    const configured = await this.implicitConfig();
+    // The common case for five of the six in most apps: nothing attached,
+    // so nothing is sent and no ledger row is written.
+    if (!configured.has(placement)) return false;
+    if (this.disposed) return false;
+    // Same guard as resolvePlacement: an EPHEMERAL anon id changes every
+    // launch, so triggering with it would mint a phantom customer per
+    // launch and the server would serve the untargeted default anyway.
+    if (this.ephemeralAnonId) return false;
+    const customerId = await this.customerIdPromise;
+    const deviceHeader = await this.deviceHeaderPromise;
+    const result = await this.request<ImplicitResolution>(
+      "POST",
+      "/v1/placements/triggered",
+      {
+        customerId,
+        placement,
+        // One id per occurrence: retries of the same launch are absorbed,
+        // a genuine second launch counts separately. Required server-side
+        // for the three moments that append an event.
+        occurrenceId: generateViewId(),
+        occurredAt: Date.now(),
+        sdkVersion: SDK_VERSION,
+        ...extra,
+      },
+      deviceHeader ? { [DEVICE_HEADER]: deviceHeader } : undefined
+    );
+    if (this.disposed || !result.paywall || !present) return false;
+    try {
+      this.onImplicitPaywall?.({ placement, resolution: result });
+    } catch (err) {
+      // The host's presentation code must never take the SDK down.
+      this.diag("onImplicitPaywall", err);
+    }
+    return true;
+  }
+
+  /** REV-272: the launch-time moments, plus the foreground listener that
+   *  `session_start` is built on.
+   *
+   *  A cold start is always both a launch AND a session — an operator who
+   *  configured only `session_start` still wants the first one — and it is an
+   *  install too when this launch generated the anonymous id. All three are
+   *  independent placements, so an app may have any subset configured and the
+   *  others cost nothing. */
+  private startImplicit(configured: RevnixConfig["lifecycle"]): void {
+    // freshInstall is set inside loadCustomerId, which the constructor kicked
+    // off but did not await — so read it after that promise settles rather
+    // than now, when it is still false on a genuine first launch.
+    //
+    // The three launch moments run SEQUENTIALLY, most specific first, and only
+    // the first that resolves to a paywall is handed to the host. All three
+    // are still reported — a launch is a launch whether or not a paywall
+    // showed — but an app that configured all three must not have three
+    // paywalls pushed onto its first frame.
+    // Subscribed BEFORE the batch, which can take a full network timeout per
+    // moment when offline: a customer who backgrounds the app during that
+    // window and comes back an hour later is a session, and missing the
+    // background transition would lose it.
+    if (configured !== false) {
+      const lifecycle: RevnixLifecycle | null =
+        configured ?? browserLifecycle();
+      if (lifecycle) {
+        try {
+          this.lifecycleUnsubscribe = lifecycle.onStateChange((state) =>
+            this.onAppState(state)
+          );
+        } catch (err) {
+          // A broken adapter costs session detection, not the client.
+          this.diag("lifecycleSubscribe", err);
+        }
+      }
+    }
+
+    this.launchBatch = this.customerIdPromise
+      .then(async () => {
+        if (this.disposed) return false;
+        let presented = false;
+        const moments: ImplicitPlacement[] = [
+          ...(this.freshInstall ? (["app_install"] as const) : []),
+          "app_launch",
+          "session_start",
+        ];
+        for (const placement of moments) {
+          const shown: boolean = await this.triggerImplicit(
+            placement,
+            undefined,
+            !presented
+          ).catch((err: unknown) => {
+            this.diag(`implicit:${placement}`, err);
+            return false;
+          });
+          presented ||= shown;
+        }
+        return presented;
+      })
+      .catch((err) => {
+        this.diag("implicitLaunch", err);
+        return false;
+      })
+      .finally(() => {
+        this.launchBatch = null;
+      });
+  }
+
+  private onAppState(state: RevnixAppState): void {
+    if (this.disposed) return;
+    if (state === "background") {
+      // First report wins: a platform that repeats "background" (a paused
+      // Activity re-reporting) must not keep resetting the clock forward.
+      this.lastBackgroundAt ??= Date.now();
+      return;
+    }
+    const since = this.lastBackgroundAt;
+    this.lastBackgroundAt = null;
+    // A foreground with no background before it is the launch itself, which
+    // the batch above already counted — or a duplicate report.
+    if (since === null) return;
+    // An app switch is not a session.
+    if (Date.now() - since >= this.sessionTimeoutMs) {
+      // A new session is also when the memoised config is re-asked: the
+      // server promises an operator's change shows up within ~30s, and a
+      // process backgrounded for days would otherwise keep firing a moment
+      // the operator turned off — or never fire one they turned on — until
+      // the next cold start.
+      this.implicitConfigPromise = null;
+      this.fireImplicit("session_start");
+    }
+  }
+
   /** REV-204 (L10): stop this client's background work (purchase retries,
    *  read-your-writes polls). Called automatically when Revnix.configure()
    *  replaces the singleton; call it yourself when discarding a manually
    *  constructed client. */
   dispose(): void {
     this.disposed = true;
+    // REV-272: a replaced client (dev fast-refresh re-running configure())
+    // would otherwise keep a foreground listener alive and mint a session on
+    // every return alongside its successor.
+    this.lifecycleUnsubscribe?.();
+    this.lifecycleUnsubscribe = null;
   }
 
   /** A block paywall reporting a paint string it could not read. Routed to the
@@ -807,6 +1136,8 @@ export class RevnixClient {
     if (stored) return stored;
     const anonymousId = generateAnonymousId();
     this.ephemeralAnonId = !this.persistentStorage;
+    // REV-272: what makes `app_install` an install rather than a launch.
+    this.freshInstall = true;
     try {
       await this.storage.setItem(CUSTOMER_ID_KEY, anonymousId);
     } catch (err) {

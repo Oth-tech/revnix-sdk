@@ -274,6 +274,49 @@ stays pulled.
 `getCachedPlacement(placementKey)` reads that cache with no network call, and
 `prefetchPlacements` (config) warms it at app start.
 
+## Implicit placements
+
+Six placements resolve without a `resolvePlacement` call: `app_install`,
+`app_launch`, `session_start`, `deeplink_open`, `paywall_decline` and
+`transaction_abandon` are moments the SDK recognises itself, so an operator
+can attach a paywall to any of them from the dashboard with no app code and
+no release. **Off by default** — passing `onImplicitPaywall` is what turns
+them on; without it the SDK makes no extra requests at all. With it, the SDK
+asks `GET /v1/config` once at construction and fires only for the moments the
+dashboard has configured, so an app that configured none costs one cached
+response per launch and nothing else.
+
+```ts
+Revnix.configure({
+  apiKey, baseUrl, storage,
+  onImplicitPaywall: ({ placement, resolution }) => present(resolution),
+  // session_start needs foreground detection. A browser is handled for you
+  // (visibilitychange); React Native passes an adapter over AppState.
+  lifecycle: {
+    onStateChange: (handler) => {
+      const sub = AppState.addEventListener("change", (s) =>
+        handler(s === "active" ? "foreground" : "background"));
+      return () => sub.remove();
+    },
+  },
+});
+
+// deeplink_open is the one moment the SDK cannot see itself — the URL
+// reaches your router. One line, from wherever you already receive it:
+Linking.addEventListener("url", ({ url }) => Revnix.client.handleDeepLink(url));
+```
+
+The SDK never presents for you — it does not own your navigation stack. You
+get the same `PlacementResolution` as `resolvePlacement` returns. When you
+render it, **pass `resolution.placementKey` to `RevnixPaywall` /
+`logPaywallShown`**: that marks the display as implicit, which is the only
+thing that stops a `paywall_decline` paywall from firing `paywall_decline`
+again when dismissed. A cold start hands you at most one paywall (install →
+launch → session, first that resolves wins), and a deep link on the first
+frame waits for that decision. A close is a decline — never report one for a
+display that ended in a purchase. `sessionTimeoutMs` (default 30 min) is how
+long the app must be backgrounded for the return to count as a session.
+
 ## A/B tests
 
 `resolvePlacement` sends the current customer id, so a running A/B test on
