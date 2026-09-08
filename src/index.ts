@@ -14,6 +14,17 @@ export { purchaseInputFromIap, type IapPurchase } from "./iap.js";
 export { memoryStorage, generateAnonymousId } from "./storage.js";
 export { SDK_VERSION } from "./version.js";
 export { DEVICE_HEADER, encodeDeviceHeader } from "./device.js";
+export {
+  browserLifecycle,
+  DEFAULT_SESSION_TIMEOUT_MS,
+  HOST_CALL_PLACEMENT,
+  IMPLICIT_PLACEMENTS,
+  type ImplicitPlacement,
+  type ImplicitSkipReason,
+  type ImplicitTrigger,
+  type ImplicitTriggerResponse,
+  type RevnixLifecycle,
+} from "./implicit.js";
 export type {
   AliasResult,
   CustomerEntitlements,
@@ -24,6 +35,7 @@ export type {
   IdentifyResult,
   IdentifyStrategy,
   IdentityInfo,
+  ImplicitResolution,
   PaywallConfig,
   PaywallInteraction,
   PaywallPurchaseOutcome,

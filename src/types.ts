@@ -2,6 +2,12 @@
 // returned by convex/http.ts in revnix-app — the backend is the source of
 // truth; update here when the API surface changes.
 
+import type {
+  ImplicitTrigger,
+  ImplicitTriggerResponse,
+  RevnixLifecycle,
+} from "./implicit.js";
+
 export type Environment = "sandbox" | "production";
 export type Store = "apple" | "google";
 
@@ -68,7 +74,48 @@ export interface RevnixConfig {
    *  no signal anywhere. Wire this to your crash/analytics reporter. Must
    *  not throw; exceptions from it are swallowed. */
   onDiagnostic?: (event: RevnixDiagnostic) => void;
+  /** REV-272: called when one of the six implicit moments resolved to a
+   *  paywall — an app launch, a session start, a deep link, a dismissed
+   *  paywall, an abandoned checkout, or the install itself. Present it however
+   *  your app presents paywalls; the SDK deliberately does not present for
+   *  you, because it does not own your navigation stack and a paywall pushed
+   *  over a splash screen is worse than no paywall.
+   *
+   *  Providing this handler is what TURNS IMPLICIT PLACEMENTS ON. Without it
+   *  the SDK makes no extra requests at all — there would be nothing to do
+   *  with the answer. With it, the SDK asks GET /v1/config once at
+   *  construction and then fires only for the moments this app has actually
+   *  configured in the dashboard, so an app that configured none still costs
+   *  one cached response per launch.
+   *
+   *  ⚠️ Pass `trigger.resolution.placementKey` to `logPaywallShown` for the
+   *  display you present. That is what tells the SDK this display came FROM an
+   *  implicit trigger, and it is the only thing that stops a `paywall_decline`
+   *  paywall from firing `paywall_decline` again when the customer dismisses
+   *  it — a loop with no way out but force-quitting. The server refuses to
+   *  serve back the very same paywall as a backstop, but it cannot see a rule
+   *  that points at a DIFFERENT paywall which points back.
+   *
+   *  Never throws into your app: an exception from this handler is reported
+   *  through `onDiagnostic` and swallowed. */
+  onImplicitPaywall?: (trigger: ImplicitTrigger<ImplicitResolution>) => void;
+  /** REV-272: explicit off switch for implicit placements, even when
+   *  `onImplicitPaywall` is set. Defaults to whether that handler is present. */
+  implicitPlacements?: boolean;
+  /** REV-272: how the SDK learns the app came to the foreground, which is what
+   *  `session_start` is built on. Defaults to a `visibilitychange` listener in
+   *  a browser and to nothing under React Native — pass an adapter over
+   *  `AppState` there (see RevnixLifecycle). `false` disables foreground
+   *  detection; launch-time moments still fire. */
+  lifecycle?: RevnixLifecycle | false;
+  /** REV-272: how long the app must have been backgrounded for the return to
+   *  count as a new session rather than an app switch. Default 30 minutes. */
+  sessionTimeoutMs?: number;
 }
+
+/** REV-272: what an implicit trigger resolves to — an ordinary placement
+ *  resolution plus why it carries no paywall, when it does not. */
+export type ImplicitResolution = PlacementResolution & ImplicitTriggerResponse;
 
 /** REV-268: the app-suppliable half of the device attribute contract. The
  *  SDK adds `sdkVersion`, `installedAt` and `firstOpen` itself. Every field
