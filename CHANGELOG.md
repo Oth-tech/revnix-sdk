@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.1 (2026-09-12)
+
 ### Added
 
 - **Device attribute contract.** Every `resolvePlacement()` now carries the
