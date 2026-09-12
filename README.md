@@ -33,7 +33,7 @@ Revnix.configure({
 `Revnix.configure()` returns the `RevnixClient`; afterwards `Revnix.client`
 is available anywhere (it throws if used before `configure`). Re-running
 `configure()` disposes the previous client first (stopping its retry drain,
-prefetches, and read-your-writes polls, safe under dev fast-refresh). You
+read-your-writes polls, and implicit-placement listener, safe under dev fast-refresh). You
 can also construct `new RevnixClient(config)` directly; call `dispose()` when
 you discard one.
 
@@ -71,6 +71,10 @@ have full access.
 | `device` | detected | `{ platform?, osVersion?, appVersion?, locale?, currency?, storefront?, model?, sandbox? }` sent with every placement resolve as `X-Revnix-Device`, evaluated by targeting rules on that request and stored as `device.*` attributes. Browser detects platform/OS/locale; React Native apps pass what `react-native-device-info` gives them. `false` disables |
 | `prefetchPlacements` | n/a | Placement keys resolved-and-cached at construction (fire-and-forget), so the session's first paywall renders even offline |
 | `onDiagnostic` | n/a | Callback invoked on every swallowed background failure (retry drains, prefetches, install/paywall reports, storage errors); see Diagnostics |
+| `onImplicitPaywall` | n/a | Receives `{ placement, resolution }` when an implicit moment resolves to a paywall; setting it turns implicit placements on. See Implicit placements |
+| `implicitPlacements` | whether `onImplicitPaywall` is set | Explicit on/off switch for implicit placements |
+| `lifecycle` | `visibilitychange` in a browser, none on React Native | Foreground/background source for `session_start`; `false` disables foreground detection |
+| `sessionTimeoutMs` | 30 min | How long the app must be backgrounded for the return to count as a new session |
 | `fetch` | global fetch | Custom fetch (tests, polyfills) |
 
 **Storage:** pass a persistent `storage` adapter (MMKV/AsyncStorage on React
@@ -201,8 +205,8 @@ await Revnix.client.registerPurchase({
 });
 ```
 
-Without proof the purchase is still accepted, but the result carries
-`provisional: true`: the entitlement is granted for a short window rather than
+Without proof the purchase is still accepted, but on an app connected to that
+store the result carries `provisional: true`: the entitlement is granted for a short window rather than
 the full period, and no revenue is recorded, until Apple's or Google's own
 notification for the charge confirms it, which normally happens within
 seconds and promotes the purchase automatically. On Google there is no
@@ -375,7 +379,9 @@ The SDK swallows failures it can recover from (retry-queue drains, placement
 prefetches, install and paywall-view reports, storage read/write errors). `onDiagnostic` surfaces them: it is called with `{ op, error, at }` for every
 such failure (ops: `retryPendingPurchases`, `prefetchPlacement`,
 `waitForEntitlements`, `reportInstall`, `logPaywallShown`, `logPaywallClosed`,
-`logPaywallEvent`, `paywall.render`, `storageRead`, `storageWrite`);
+`logPaywallEvent`, `paywall.render`, `storageRead`, `storageWrite`, and for
+implicit placements `implicitConfig`, `implicitLaunch`, `implicit:<placement>`,
+`onImplicitPaywall`, `lifecycleSubscribe`);
 exceptions thrown by your callback are swallowed. The count of background
 failures since the last report also rides the next request as an
 `X-Revnix-Bg-Failures: <n>` header, so the backend can see silent client pain
@@ -399,7 +405,7 @@ for status 0, 429, and 5xx):
 |---|---|---|
 | `RevnixTimeoutError` | 0 | Request exceeded `requestTimeoutMs` |
 | `RevnixNetworkError` | 0 | fetch failed (offline, DNS, TLS) |
-| `RevnixAuthError` | 401/403 | Bad/revoked key, or publishable key on a secret-gated endpoint |
+| `RevnixAuthError` | 401/403 | Bad/revoked key, publishable key on a secret-gated endpoint, or a `registerPurchase` the server refused for store proof (403) |
 | `PurchaseBlockedError` | 409 | Purchase token owned by another customer, transfers blocked |
 | `RevnixRateLimitError` | 429 | Rate limited; `retryAfterMs` when the server sent `Retry-After` |
 | `RevnixError` | other | Anything else; message from the server's `error` field |
@@ -464,6 +470,14 @@ if (!paywall || !offering) return null; // both are nullable; guard first
   (`DEFAULT_PAYWALL_THEME` / `LIGHT_PAYWALL_THEME` are exported).
 - Selection can be controlled (`selectedPackageId` + `onSelectPackage`) or
   left internal (defaults to the highlighted package).
+- `onClose` draws a close button and, with `client`, reports `paywall.closed`;
+  you perform the dismissal. Omit it and no close is drawn.
+- Designed paywalls: when `config.blocks` carries a builder design,
+  `RevnixPaywall` renders it instead of the layout, and the fields above are
+  the fallback. Pass `gradient` (expo-linear-gradient /
+  react-native-linear-gradient), `blur` (expo-blur /
+  @react-native-community/blur) and `fontFamilyMap` so it draws as designed,
+  and `locale` to choose its translation (defaults to the device language).
 
 The `/ui` entrypoint is separate from the core so pure-JS consumers never
 load `react` / `react-native` (both are peer dependencies used only by `/ui`).
@@ -481,6 +495,8 @@ load `react` / `react-native` (both are peer dependencies used only by `/ui`).
 | `logPaywallClosed` | `POST /v1/paywalls/closed` | any |
 | `logPaywallEvent` | `POST /v1/paywalls/events` | any |
 | `setAttributes` | `POST /v1/customers/{id}/attributes` | any |
+| implicit placements config | `GET /v1/config` | any |
+| implicit moment / `handleDeepLink` | `POST /v1/placements/triggered` | any |
 | `identify` | `POST /v1/identify` | secret |
 | `alias` | `POST /v1/customers/{id}/alias` | secret |
 

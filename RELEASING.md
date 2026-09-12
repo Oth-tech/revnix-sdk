@@ -5,7 +5,7 @@ repo's `Release` workflow (`.github/workflows/release.yml`), which:
 
 1. runs typecheck + tests on `main`;
 2. reads `## Unreleased` in `CHANGELOG.md` to pick the bump —
-   `### Breaking` → major, `### Added` → minor, anything else → patch, empty →
+   `### Breaking` or `### Removed` → major, `### Added` → minor, anything else → patch, empty →
    patch with a lockstep note (the version always moves, by decision);
 3. bumps `package.json`, `package-lock.json`, `src/version.ts`, dates the
    changelog entry, and lands it through a pull request merged with a merge
