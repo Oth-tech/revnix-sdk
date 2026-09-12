@@ -300,6 +300,34 @@ export function gradientFallbackColor(value: string): string | undefined {
   return base?.colors[0] ?? backgroundBaseColor(value);
 }
 
+/**
+ * The solid a surface paints UNDER a fill — or nothing.
+ *
+ * The solid exists for one reason: an app that passes no gradient component
+ * still gets a colour instead of a hole. It was painted unconditionally, and
+ * for an opaque fill that never showed, because the real gradient covered it.
+ *
+ * A scrim showed it. A scrim is a gradient that is transparent at one end ON
+ * PURPOSE — that is how a photo stays visible above the copy. Its first stop
+ * is the dark end, so the "fallback" under it was a near-black sheet across
+ * the whole box, and the gradient's transparent half revealed that sheet
+ * instead of the photograph behind it. Every photo background looked like a
+ * black screen on React Native, while the dashboard's CSS painted it fine.
+ *
+ * So: when the gradient will actually be drawn, nothing goes under it. The
+ * solid is only for the degraded case — no gradient renderer, or a fill this
+ * build cannot read as a gradient at all.
+ */
+export function surfaceSolid(
+  resolved: string | undefined,
+  canPaintGradient: boolean,
+): string | undefined {
+  if (!resolved) return undefined;
+  if (!isGradient(resolved)) return resolved;
+  if (canPaintGradient && parseGradient(resolved).length > 0) return undefined;
+  return gradientFallbackColor(resolved);
+}
+
 /** Splits comma-separated background layers, ignoring commas inside parens. */
 function splitLayers(value: string): string[] {
   return splitTop(value).map((s) => s.trim());
