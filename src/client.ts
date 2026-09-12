@@ -899,6 +899,48 @@ export class RevnixClient {
       .catch((err) => this.diag("implicit:deeplink_open", err));
   }
 
+  /**
+   * REV-283: hand over the Android Play Store install referrer.
+   *
+   * The deferred half of link attribution. A deep link only ever reaches an
+   * app that already exists, which leaves out the customers an ad actually
+   * won — they saw it, had no app, and installed one. Google Play carries a
+   * referrer string through that install, so on Android the answer is exact
+   * rather than guessed. (Apple ships no equivalent; that half stays an
+   * attribution provider's job.)
+   *
+   * Read it yourself with the Play Install Referrer library and pass the raw
+   * string — `utm_source=instagram&utm_medium=cpc` — exactly as you received
+   * it. The SDK cannot read it for you: it is an Android API behind a service
+   * binding, and a cross-platform SDK has no business linking it.
+   *
+   * Safe to call late, and safe to call twice. The Play API answers
+   * asynchronously, so the install has usually been reported already; the
+   * server absorbs the duplicate and seeds the campaign facts from it anyway.
+   * They are fill-only, so a deep link the customer has opened since is never
+   * overwritten.
+   *
+   * Fire-and-forget: never blocks, never throws.
+   */
+  handleInstallReferrer(referrer: string): void {
+    if (this.disposed || referrer.trim().length === 0) return;
+    // An id that changes every launch would file the campaign against a
+    // customer nobody will see again, and fill the Channel axis with
+    // one-launch phantoms. Same guard, same reason, as triggerImplicit.
+    if (this.ephemeralAnonId) return;
+    void this.customerIdPromise
+      .then((customerId) =>
+        this.request("POST", "/v1/installs", {
+          customerId,
+          occurredAt: Date.now(),
+          sdkVersion: SDK_VERSION,
+          installReferrer: referrer.slice(0, 1024),
+          ...this.installMetadata,
+        })
+      )
+      .catch((err) => this.diag("handleInstallReferrer", err));
+  }
+
   /** REV-272: which of the six this app has configured, asked ONCE per client
    *  and shared by every trigger after it. A failure answers "none" rather
    *  than throwing or retrying forever — implicit placements are a bonus on
