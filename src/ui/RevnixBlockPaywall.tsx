@@ -38,6 +38,7 @@ import {
   isGradient,
   parseGradient,
   resolveColor,
+  surfaceSolid,
   withAlpha,
   type GradientLayer,
 } from "../blocks/color.js";
@@ -327,7 +328,11 @@ function fillColor(
   return isGradient(resolved) ? gradientFallbackColor(resolved) : resolved;
 }
 
-/** Paints a fill that may be a CSS gradient, behind `children`. */
+/** Paints a fill that may be a CSS gradient, behind `children`.
+ *
+ *  The solid goes under the gradient only when the gradient itself cannot be
+ *  drawn. A scrim is transparent at one end on purpose, and a solid under it
+ *  was a black sheet over the background photo — see `surfaceSolid`. */
 function Surface({
   fill,
   doc,
@@ -341,7 +346,7 @@ function Surface({
   style?: StyleProp<ViewStyle>;
   children?: React.ReactNode;
 }) {
-  const solid = fillColor(fill, doc);
+  const solid = surfaceSolid(resolveColor(fill, doc), gradient !== undefined);
   return (
     <View style={[style, solid ? { backgroundColor: solid } : null]}>
       <GradientLayers fill={fill} doc={doc} gradient={gradient} />

@@ -21,6 +21,15 @@
 - `installMetadata` is superseded by `device` (both still feed the install
   report).
 
+### Fixed
+
+- **Photo backgrounds under a scrim rendered black on React Native.** A
+  surface painted its gradient's first colour underneath the gradient as a
+  fallback, and a scrim's transparent end showed that near-black sheet instead
+  of the photo. The solid is now painted only when the gradient cannot be
+  drawn: no gradient component passed, or a fill this build cannot parse.
+  (REV-279)
+
 ## 1.1.0 (2026-09-05)
 
 ### Added
