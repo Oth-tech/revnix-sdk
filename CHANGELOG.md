@@ -15,6 +15,13 @@
   nothing. `installedAt` is persisted on first launch; `firstOpen` is true for
   that whole first session. Not sent for an ephemeral anonymous id. (REV-268)
 - `DeviceFacts` type; `DEVICE_HEADER` and `encodeDeviceHeader` exports.
+- **`handleInstallReferrer(referrer)`**: hand over the Android Play Store
+  install referrer, verbatim, as the Play Install Referrer library returns it.
+  The server reads its campaign parameters into the customer's `link.*`
+  attributes, so a customer an ad won is credited to that channel instead of
+  "Direct". Fill-only: a deep link opened since is never overwritten. Safe to
+  call late or twice; a no-op for an empty string, a disposed client, or an
+  ephemeral anonymous id. (REV-283)
 
 ### Changed
 
