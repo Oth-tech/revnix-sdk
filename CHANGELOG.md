@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.2 (2026-09-14)
+
 ### Added
 
 - **On-device QR preview.** `handleDeepLink` recognises a dashboard QR/link
