@@ -306,6 +306,15 @@ Revnix.configure({
 Linking.addEventListener("url", ({ url }) => Revnix.client.handleDeepLink(url));
 ```
 
+`handleDeepLink` also recognises the dashboard's QR/link preview
+(`…?revnix_preview=<token>`) and routes it through the same
+`onImplicitPaywall` handler with `placement: "revnix_preview"` — no extra
+wiring needed. Purchases are disabled on that display: `RevnixPaywall`
+(classic or designed) shows an alert instead of calling `onPurchase`, and no
+paywall view/close/interaction is sent to analytics for it. A host rendering
+`RevnixBlockPaywall` directly, without `RevnixPaywall`, is not covered — it
+takes no `placementKey` and has no way to know the display is a preview.
+
 The SDK never presents for you — it does not own your navigation stack. You
 get the same `PlacementResolution` as `resolvePlacement` returns. When you
 render it, **pass `resolution.placementKey` to `RevnixPaywall` /

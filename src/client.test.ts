@@ -500,6 +500,26 @@ describe("paywall view reporting", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  test("a preview display sends nothing — shown, closed, or an interaction", async () => {
+    const fetchImpl = jest.fn<typeof fetch>();
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    await client.getCustomerId();
+
+    const viewId = client.logPaywallShown({ placementKey: "revnix_preview" });
+    expect(viewId).toMatch(/^rvx_view_[0-9a-f]{32}$/);
+    client.logPaywallClosed(viewId, { placementKey: "revnix_preview" });
+    client.logPaywallEvent("selected", viewId, {
+      placementKey: "revnix_preview",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 // CTO-SCALE-REVIEW M5: omitting `storage` used to silently run memory-only —

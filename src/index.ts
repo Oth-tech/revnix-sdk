@@ -19,6 +19,7 @@ export {
   DEFAULT_SESSION_TIMEOUT_MS,
   HOST_CALL_PLACEMENT,
   IMPLICIT_PLACEMENTS,
+  PREVIEW_PLACEMENT_KEY,
   type ImplicitPlacement,
   type ImplicitSkipReason,
   type ImplicitTrigger,

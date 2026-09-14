@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- **On-device QR preview.** `handleDeepLink` recognises a dashboard QR/link
+  preview URL and hands the draft paywall to `onImplicitPaywall` under
+  `placement: "revnix_preview"` (`PREVIEW_PLACEMENT_KEY`); `RevnixPaywall`
+  (classic or designed) disables the purchase tap for it, and no view/close/
+  interaction is sent to analytics for that display. A host rendering
+  `RevnixBlockPaywall` directly is not covered — it takes no `placementKey`.
+
+### Changed
+
+- **Type-level break:** `ImplicitTrigger.placement` widens from
+  `ImplicitPlacement` to `ImplicitPlacement | "revnix_preview"`, to carry the
+  QR-preview trigger above. Code that switches exhaustively over
+  `ImplicitPlacement` on `trigger.placement` needs a `"revnix_preview"` case
+  (or a default) to keep compiling.
+
 ## 1.1.1 (2026-09-12)
 
 ### Added

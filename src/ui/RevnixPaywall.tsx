@@ -18,6 +18,7 @@
 import * as React from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Linking,
   Pressable,
@@ -34,6 +35,7 @@ import type {
   PaywallInteraction,
   PaywallPurchaseOutcome,
 } from "../types.js";
+import { PREVIEW_PLACEMENT_KEY } from "../implicit.js";
 import type { PaywallBlockDoc } from "../blocks/types.js";
 import type { FontFamilyMap } from "../blocks/style.js";
 import { withAlpha } from "../blocks/color.js";
@@ -342,6 +344,10 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
   const attemptRef = React.useRef(0);
   const handlePurchase = React.useMemo(
     () => (packageId: string) => {
+      if (placementKey === PREVIEW_PLACEMENT_KEY) {
+        Alert.alert("Preview", "Purchases are disabled in preview.");
+        return;
+      }
       const attempt = ++attemptRef.current;
       const productId = productOf(packageId);
       const occurrence = `${viewIdRef.current ?? ""}:buy:${attempt}`;
@@ -380,7 +386,7 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
       }
       settle(returned as PaywallPurchaseOutcome | void);
     },
-    [onPurchase, report, productOf]
+    [onPurchase, report, productOf, placementKey]
   );
 
   const { onRestore } = props;

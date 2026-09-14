@@ -404,6 +404,8 @@ export interface PlacementResolution {
   stale?: boolean;
   /** REV-157 (SDK-populated): unix ms this resolution was fetched/cached. */
   fetchedAt?: number;
+  /** Set only on a dashboard preview resolution, never on a real resolve. */
+  preview?: true;
 }
 
 /** REV-263: the six paywall interactions `logPaywallEvent` can report — what
