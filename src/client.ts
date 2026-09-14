@@ -20,6 +20,7 @@ import {
   DEFAULT_SESSION_TIMEOUT_MS,
   IMPLICIT_CONFIG_RETRY_MS,
   IMPLICIT_PLACEMENTS,
+  PREVIEW_PLACEMENT_KEY,
   type ImplicitPlacement,
   type RevnixAppState,
   type RevnixLifecycle,
@@ -53,6 +54,9 @@ const ENTITLEMENTS_CACHE_MAX = 4;
 // REV-204 (L10): http:// is tolerated only for development hosts.
 const PRIVATE_HTTP_HOST =
   /^http:\/\/(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[::1\])/i;
+
+// URL/URLSearchParams are avoided: React Native's URL polyfill lacks parts of both.
+const PREVIEW_TOKEN_RE = /[?&]revnix_preview=([0-9a-f]{64})(?:[&#]|$)/;
 
 // REV-157: how long past a cached entitlement's expiresAt it is still served
 // as active. An offline device cannot see the renewal that most likely
@@ -701,6 +705,7 @@ export class RevnixClient {
     ) {
       this.implicitViewIds.add(viewId);
     }
+    if (options?.placementKey === PREVIEW_PLACEMENT_KEY) return viewId;
     void this.customerIdPromise
       .then((customerId) =>
         this.request("POST", "/v1/paywalls/viewed", {
@@ -735,6 +740,7 @@ export class RevnixClient {
     viewId: string,
     options?: { placementKey?: string; paywallId?: string }
   ): void {
+    if (options?.placementKey === PREVIEW_PLACEMENT_KEY) return;
     void this.customerIdPromise
       .then((customerId) =>
         this.request("POST", "/v1/paywalls/closed", {
@@ -795,6 +801,7 @@ export class RevnixClient {
       eventId?: string;
     }
   ): void {
+    if (options?.placementKey === PREVIEW_PLACEMENT_KEY) return;
     void this.customerIdPromise
       .then((customerId) =>
         this.request("POST", "/v1/paywalls/events", {
@@ -880,9 +887,17 @@ export class RevnixClient {
    *  goes to your entry point, and an SDK intercepting it would be fighting
    *  your router.
    *
-   *  Fire-and-forget: never blocks, never throws, and does nothing at all
-   *  unless `deeplink_open` is configured in the dashboard. */
+   *  Fire-and-forget: never blocks, never throws. An ordinary link does
+   *  nothing unless `deeplink_open` is configured in the dashboard; a
+   *  dashboard preview link is always handed to `onImplicitPaywall`. */
   handleDeepLink(url: string): void {
+    const previewToken = PREVIEW_TOKEN_RE.exec(url)?.[1];
+    if (previewToken !== undefined) {
+      void this.presentPreview(previewToken).catch((err) =>
+        this.diag("preview", err)
+      );
+      return;
+    }
     const extra = { url: url.slice(0, 1024) };
     const batch = this.launchBatch;
     if (batch === null) {
@@ -897,6 +912,34 @@ export class RevnixClient {
         this.triggerImplicit("deeplink_open", extra, !launchPresented)
       )
       .catch((err) => this.diag("implicit:deeplink_open", err));
+  }
+
+  private async presentPreview(token: string): Promise<void> {
+    await this.launchBatch;
+    if (this.disposed) return;
+    const resolution = await this.request<PlacementResolution>(
+      "GET",
+      `/v1/paywalls/preview/${token}`
+    );
+    if (this.disposed) return;
+    if (!this.onImplicitPaywall) {
+      this.diag("preview", new Error("no onImplicitPaywall handler configured"));
+      return;
+    }
+    try {
+      this.onImplicitPaywall({
+        placement: PREVIEW_PLACEMENT_KEY,
+        resolution: {
+          ...resolution,
+          stale: false,
+          fetchedAt: Date.now(),
+          skipReason: null,
+          recorded: false,
+        },
+      });
+    } catch (err) {
+      this.diag("onImplicitPaywall", err);
+    }
   }
 
   /**

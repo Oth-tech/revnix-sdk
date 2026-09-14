@@ -5,7 +5,7 @@ import {
   DEFAULT_SESSION_TIMEOUT_MS,
   HOST_CALL_PLACEMENT,
   IMPLICIT_PLACEMENTS,
-  type ImplicitPlacement,
+  PREVIEW_PLACEMENT_KEY,
   type RevnixLifecycle,
 } from "./implicit.js";
 import { memoryStorage } from "./storage.js";
@@ -149,7 +149,7 @@ describe("opting in", () => {
 
   test("a handler turns it on and the launch moments fire", async () => {
     const { impl, calls } = stubFetch(["app_launch", "session_start"]);
-    const seen: ImplicitPlacement[] = [];
+    const seen: string[] = [];
     makeClient(impl, { onImplicitPaywall: (t) => seen.push(t.placement) });
     await settle();
 
@@ -168,7 +168,7 @@ describe("opting in", () => {
     // All three launch moments configured, all three resolving to a paywall.
     // Three paywalls pushed onto the first frame is not a feature.
     const { impl, calls } = stubFetch(["app_install", "app_launch", "session_start"]);
-    const seen: ImplicitPlacement[] = [];
+    const seen: string[] = [];
     // No customerId → a fresh anonymous id → this launch is the install.
     new RevnixClient({
       ...CONFIG,
@@ -205,7 +205,7 @@ describe("opting in", () => {
         paywall: withPaywall.has(body.placement) ? RESOLUTION.paywall : null,
       });
     });
-    const seen: ImplicitPlacement[] = [];
+    const seen: string[] = [];
     makeClient(impl, { onImplicitPaywall: (t) => seen.push(t.placement) });
     await settle();
     expect(seen).toEqual(["session_start"]);
@@ -286,7 +286,7 @@ describe("opting in", () => {
     const now = jest.spyOn(Date, "now");
     const t0 = 1_700_000_000_000;
     now.mockReturnValue(t0);
-    const seen: ImplicitPlacement[] = [];
+    const seen: string[] = [];
     const client = makeClient(impl, {
       onImplicitPaywall: (t) => seen.push(t.placement),
     });
@@ -460,7 +460,7 @@ describe("the loop guard", () => {
 
   test("a deep link on the first frame waits for the launch batch and presents only if it did not", async () => {
     const { impl, calls } = stubFetch(["app_launch", "deeplink_open"]);
-    const seen: ImplicitPlacement[] = [];
+    const seen: string[] = [];
     const client = makeClient(impl, {
       onImplicitPaywall: (t) => seen.push(t.placement),
     });
@@ -673,5 +673,133 @@ describe("deep links", () => {
     expect(ids).toHaveLength(2);
     // Idempotency keys on it: two genuine link opens must count twice.
     expect(new Set(ids).size).toBe(2);
+  });
+});
+
+describe("dashboard QR/link preview", () => {
+  const TOKEN = "a".repeat(64);
+  const PREVIEW_BODY = {
+    placementKey: PREVIEW_PLACEMENT_KEY,
+    revision: null,
+    offering: null,
+    paywall: { paywallId: "pw_preview", name: "Preview", config: {} },
+    experiment: null,
+    targeting: null,
+    preview: true,
+    expiresAt: 1_800_000_000_000,
+  };
+
+  function stubPreviewFetch(status = 200, body: unknown = PREVIEW_BODY) {
+    const calls: RecordedCall[] = [];
+    const impl = jest.fn<typeof fetch>(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      const reqBody =
+        typeof init?.body === "string"
+          ? (JSON.parse(init.body) as Record<string, unknown>)
+          : undefined;
+      calls.push({ path, body: reqBody });
+      if (path === `/v1/paywalls/preview/${TOKEN}`) {
+        return jsonResponse(body, status);
+      }
+      if (path === "/v1/config") {
+        return jsonResponse({ revision: 1, implicitPlacements: ["deeplink_open"] });
+      }
+      if (path === "/v1/placements/triggered") {
+        return jsonResponse(RESOLUTION);
+      }
+      return jsonResponse({ ok: true }, 201);
+    });
+    return { impl, calls };
+  }
+
+  test("a preview link fetches the preview and hands it to onImplicitPaywall, never /v1/placements/triggered", async () => {
+    const { impl, calls } = stubPreviewFetch();
+    const seen: string[] = [];
+    const client = makeClient(impl, {
+      onImplicitPaywall: (t) => seen.push(t.placement),
+    });
+    await settle();
+
+    client.handleDeepLink(`voigu://revnix-preview?revnix_preview=${TOKEN}`);
+    await settle();
+
+    expect(calls.map((c) => c.path)).toContain(`/v1/paywalls/preview/${TOKEN}`);
+    expect(triggersIn(calls)).toHaveLength(0);
+    expect(seen).toEqual([PREVIEW_PLACEMENT_KEY]);
+  });
+
+  test("a preview on the first frame waits for the launch batch, presenting after it", async () => {
+    const { impl, calls } = stubFetch(["app_launch"]);
+    const seen: string[] = [];
+    const client = makeClient(impl, {
+      onImplicitPaywall: (t) => seen.push(t.placement),
+    });
+    client.handleDeepLink(`voigu://revnix-preview?revnix_preview=${TOKEN}`);
+    await settle();
+
+    expect(triggersIn(calls).map((c) => c.body?.placement)).toEqual([
+      "app_launch",
+    ]);
+    expect(seen).toEqual(["app_launch", PREVIEW_PLACEMENT_KEY]);
+  });
+
+  test("a malformed token falls through to the ordinary deep-link path", async () => {
+    const { impl, calls } = stubFetch(["deeplink_open"]);
+    const client = makeClient(impl, { onImplicitPaywall: () => undefined });
+    await settle();
+
+    client.handleDeepLink("voigu://revnix-preview?revnix_preview=not-hex");
+    await settle();
+
+    expect(triggersIn(calls).map((c) => c.body?.placement)).toEqual([
+      "deeplink_open",
+    ]);
+  });
+
+  test("an ordinary URL is unaffected", async () => {
+    const { impl, calls } = stubFetch(["deeplink_open"]);
+    const client = makeClient(impl, { onImplicitPaywall: () => undefined });
+    await settle();
+
+    client.handleDeepLink("https://example.com/promo");
+    await settle();
+
+    expect(triggersIn(calls).map((c) => c.body?.placement)).toEqual([
+      "deeplink_open",
+    ]);
+  });
+
+  test("a 404 preview never throws and never presents", async () => {
+    const { impl } = stubPreviewFetch(404, { error: "not found" });
+    const seen: unknown[] = [];
+    const client = makeClient(impl, { onImplicitPaywall: (t) => seen.push(t) });
+    await settle();
+
+    expect(() =>
+      client.handleDeepLink(`voigu://revnix-preview?revnix_preview=${TOKEN}`)
+    ).not.toThrow();
+    await settle();
+
+    expect(seen).toEqual([]);
+  });
+
+  test("no onImplicitPaywall handler configured: nothing to present, reported via onDiagnostic", async () => {
+    const { impl } = stubPreviewFetch();
+    const diagnostics: string[] = [];
+    const client = new RevnixClient({
+      apiKey: "rvx_pk_test_abc",
+      baseUrl: "https://demo.convex.site",
+      storage: memoryStorage(),
+      customerId: "cust-implicit",
+      reportInstalls: false,
+      fetch: impl,
+      onDiagnostic: (event) => diagnostics.push(event.op),
+    });
+    await settle();
+
+    client.handleDeepLink(`voigu://revnix-preview?revnix_preview=${TOKEN}`);
+    await settle();
+
+    expect(diagnostics).toContain("preview");
   });
 });

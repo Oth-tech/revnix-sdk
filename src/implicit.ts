@@ -35,6 +35,11 @@ export type ImplicitSkipReason = "not_configured" | "same_paywall";
  *  would be fighting the host's router. Call `handleDeepLink(url)`. */
 export const HOST_CALL_PLACEMENT: ImplicitPlacement = "deeplink_open";
 
+/** The placementKey `handleDeepLink` reports for a dashboard QR/link preview
+ *  (`<scheme>://revnix-preview?revnix_preview=<token>`) — not one of the six
+ *  above, and never sent to /v1/placements/triggered. */
+export const PREVIEW_PLACEMENT_KEY = "revnix_preview";
+
 /** How long the app must have been backgrounded for the return to count as a
  *  new session rather than an app switch. Matches Superwall's own definition
  *  so a team moving over gets the same numbers. */
@@ -107,8 +112,8 @@ export function browserLifecycle(): RevnixLifecycle | null {
 
 /** What the host is handed when a moment resolved to a paywall. */
 export interface ImplicitTrigger<TResolution> {
-  /** Which of the six fired. */
-  placement: ImplicitPlacement;
+  /** Which of the six fired, or `PREVIEW_PLACEMENT_KEY` for a dashboard preview. */
+  placement: ImplicitPlacement | typeof PREVIEW_PLACEMENT_KEY;
   /** The resolution, exactly as `resolvePlacement` would have returned it —
    *  offering, paywall, experiment and targeting all included. */
   resolution: TResolution;
