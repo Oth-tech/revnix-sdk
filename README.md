@@ -279,8 +279,9 @@ stays pulled.
 Six placements resolve without a `resolvePlacement` call: `app_install`,
 `app_launch`, `session_start`, `deeplink_open`, `paywall_decline` and
 `transaction_abandon` are moments the SDK recognises itself, so an operator
-can attach a paywall to any of them from the dashboard with no app code and
-no release. **Off by default** — passing `onImplicitPaywall` is what turns
+can attach a paywall to any of them from the dashboard with no release. Five
+need no app code; `deeplink_open` needs the `handleDeepLink` call shown
+below. **Off by default** — passing `onImplicitPaywall` is what turns
 them on; without it the SDK makes no extra requests at all. With it, the SDK
 asks `GET /v1/config` once at construction and fires only for the moments the
 dashboard has configured, so an app that configured none costs one cached
@@ -302,9 +303,17 @@ Revnix.configure({
 });
 
 // deeplink_open is the one moment the SDK cannot see itself — the URL
-// reaches your router. One line, from wherever you already receive it:
+// reaches your router:
+Linking.getInitialURL().then((url) => url && Revnix.client.handleDeepLink(url));
 Linking.addEventListener("url", ({ url }) => Revnix.client.handleDeepLink(url));
 ```
+
+`getInitialURL()` is the cold start — the link that launched a closed app;
+the `url` event is a link arriving while the app is already running. Run
+both once, at module scope, not inside a component effect that can remount
+(StrictMode runs effects twice in development). A full JS reload (dev
+reload, an OTA update) makes `getInitialURL()` return the same URL again,
+and `handleDeepLink` would report that open twice.
 
 `handleDeepLink` also recognises the dashboard's QR/link preview
 (`…?revnix_preview=<token>`) and routes it through the same
