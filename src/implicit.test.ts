@@ -11,14 +11,6 @@ import {
 import { memoryStorage } from "./storage.js";
 import type { ImplicitResolution, PlacementResolution } from "./types.js";
 
-// REV-272: implicit placements, SDK side.
-//
-// Two properties matter more than the wiring: the SDK must make NO extra
-// requests for an app that has not opted in or has configured nothing, and a
-// paywall shown BECAUSE a paywall was dismissed must never fire another
-// dismissal trigger. The second is a loop the user cannot escape without
-// force-quitting, so it is tested from both directions.
-
 const CONFIG = { apiKey: "rvx_pk_test_abc", baseUrl: "https://demo.convex.site" };
 
 const RESOLUTION: PlacementResolution = {
@@ -221,14 +213,18 @@ describe("opting in", () => {
     expect(calls).toEqual([]);
   });
 
-  test("an app that configured NOTHING asks once and then stays silent", async () => {
+  test("an app that configured NOTHING asks once, plus one report per deep link", async () => {
     const { impl, calls } = stubFetch([]);
     const client = makeClient(impl, { onImplicitPaywall: () => undefined });
     await settle();
     client.handleDeepLink("https://example.com/promo");
     await settle();
 
-    expect(calls.map((c) => c.path)).toEqual(["/v1/config"]);
+    expect(calls.map((c) => c.path)).toEqual([
+      "/v1/config",
+      "/v1/placements/triggered",
+    ]);
+    expect(triggersIn(calls)[0]?.body?.resolve).toBe(false);
   });
 
   test("/v1/config is asked ONCE, however many moments fire", async () => {
@@ -252,8 +248,9 @@ describe("opting in", () => {
       return jsonResponse(RESOLUTION);
     });
     const diagnostics: string[] = [];
+    const seen: string[] = [];
     const client = makeClient(impl, {
-      onImplicitPaywall: () => undefined,
+      onImplicitPaywall: (t) => seen.push(t.placement),
       onDiagnostic: (event) => diagnostics.push(event.op),
     });
     await settle();
@@ -261,25 +258,24 @@ describe("opting in", () => {
     await settle();
 
     expect(diagnostics).toContain("implicitConfig");
-    // No trigger was attempted.
-    expect(
-      impl.mock.calls.filter(
-        ([input]) => new URL(String(input)).pathname === "/v1/placements/triggered"
-      )
-    ).toHaveLength(0);
+    const triggers = impl.mock.calls.filter(
+      ([input]) => new URL(String(input)).pathname === "/v1/placements/triggered"
+    );
+    expect(triggers).toHaveLength(1);
+    const [, init] = triggers[0] ?? [];
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(body.resolve).toBe(false);
+    expect(seen).toEqual([]);
   });
 
   test("a failed /v1/config is retried after the hold, not memoised for the session", async () => {
-    // An offline cold start must not disable every implicit moment until the
-    // next launch — a deep link opened an hour later on good network should
-    // still work. Held for a minute so an offline burst costs one probe.
     let configCalls = 0;
     const impl = jest.fn<typeof fetch>(async (input) => {
       const path = new URL(String(input)).pathname;
       if (path === "/v1/config") {
         configCalls += 1;
         if (configCalls === 1) throw new Error("offline");
-        return jsonResponse({ revision: 1, implicitPlacements: ["deeplink_open"] });
+        return jsonResponse({ revision: 1, implicitPlacements: ["paywall_decline"] });
       }
       return jsonResponse(RESOLUTION);
     });
@@ -294,16 +290,33 @@ describe("opting in", () => {
     expect(seen).toEqual([]);
 
     // Inside the hold: answered "none" without a request.
-    client.handleDeepLink("https://example.com/too-soon");
+    const viewId1 = client.logPaywallShown({
+      placementKey: "premium_button",
+      paywallId: "pw_sale",
+    });
+    await settle();
+    client.logPaywallClosed(viewId1, {
+      placementKey: "premium_button",
+      paywallId: "pw_sale",
+    });
     await settle();
     expect(configCalls).toBe(1);
     expect(seen).toEqual([]);
 
     // An hour later, on good network.
     now.mockReturnValue(t0 + 60 * 60_000);
-    client.handleDeepLink("https://example.com/promo");
+    const viewId2 = client.logPaywallShown({
+      placementKey: "premium_button",
+      paywallId: "pw_sale",
+    });
     await settle();
-    expect(seen).toEqual(["deeplink_open"]);
+    client.logPaywallClosed(viewId2, {
+      placementKey: "premium_button",
+      paywallId: "pw_sale",
+    });
+    await settle();
+    expect(configCalls).toBe(2);
+    expect(seen).toEqual(["paywall_decline"]);
     now.mockRestore();
   });
 });
@@ -673,6 +686,83 @@ describe("deep links", () => {
     expect(ids).toHaveLength(2);
     // Idempotency keys on it: two genuine link opens must count twice.
     expect(new Set(ids).size).toBe(2);
+  });
+
+  test("no handler: still reports the link for attribution, resolve: false, no /v1/config", async () => {
+    const { impl, calls } = stubFetch([]);
+    const client = makeClient(impl);
+    await settle();
+
+    client.handleDeepLink("https://example.com/promo?utm_source=ig");
+    await settle();
+
+    expect(calls.map((c) => c.path)).not.toContain("/v1/config");
+    const triggers = triggersIn(calls);
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0]?.body?.url).toBe("https://example.com/promo?utm_source=ig");
+    expect(triggers[0]?.body?.resolve).toBe(false);
+  });
+
+  test("implicitPlacements: false with a handler: reports the link, never presents", async () => {
+    const { impl, calls } = stubFetch([]);
+    const seen: unknown[] = [];
+    const client = makeClient(impl, {
+      implicitPlacements: false,
+      onImplicitPaywall: (t) => seen.push(t),
+    });
+    await settle();
+
+    client.handleDeepLink("https://example.com/promo");
+    await settle();
+
+    const triggers = triggersIn(calls);
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0]?.body?.resolve).toBe(false);
+    expect(seen).toEqual([]);
+  });
+
+  test("implicit on, configured: no resolve key, and the paywall is handed over", async () => {
+    const { impl, calls } = stubFetch(["deeplink_open"]);
+    const seen: string[] = [];
+    const client = makeClient(impl, {
+      onImplicitPaywall: (t) => seen.push(t.placement),
+    });
+    await settle();
+
+    client.handleDeepLink("https://example.com/promo");
+    await settle();
+
+    const trigger = triggersIn(calls)[0];
+    expect(trigger?.body).not.toHaveProperty("resolve");
+    expect(seen).toEqual(["deeplink_open"]);
+  });
+
+  test("implicit on, NOT configured: resolve: false, handler never called", async () => {
+    const { impl, calls } = stubFetch(["app_launch"]);
+    const seen: string[] = [];
+    const client = makeClient(impl, {
+      onImplicitPaywall: (t) => seen.push(t.placement),
+    });
+    await settle();
+
+    client.handleDeepLink("https://example.com/promo");
+    await settle();
+
+    const triggers = triggersIn(calls);
+    const trigger = triggers[triggers.length - 1];
+    expect(trigger?.body?.placement).toBe("deeplink_open");
+    expect(trigger?.body?.resolve).toBe(false);
+    expect(seen).not.toContain("deeplink_open");
+  });
+
+  test("a deep link on an ephemeral anonymous id sends no trigger", async () => {
+    const { impl, calls } = stubFetch(["deeplink_open"]);
+    const client = makeClient(impl, { customerId: undefined, storage: undefined });
+
+    client.handleDeepLink("https://example.com/promo");
+    await settle();
+
+    expect(triggersIn(calls)).toHaveLength(0);
   });
 });
 

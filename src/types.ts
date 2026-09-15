@@ -86,7 +86,9 @@ export interface RevnixConfig {
    *  with the answer. With it, the SDK asks GET /v1/config once at
    *  construction and then fires only for the moments this app has actually
    *  configured in the dashboard, so an app that configured none still costs
-   *  one cached response per launch.
+   *  one cached response per launch. The one exception is `handleDeepLink`:
+   *  it always reports the URL it is handed, handler or not, because the
+   *  server files that link's attribution facts from the report itself.
    *
    *  ⚠️ Pass `trigger.resolution.placementKey` to `logPaywallShown` for the
    *  display you present. That is what tells the SDK this display came FROM an
@@ -100,7 +102,11 @@ export interface RevnixConfig {
    *  through `onDiagnostic` and swallowed. */
   onImplicitPaywall?: (trigger: ImplicitTrigger<ImplicitResolution>) => void;
   /** REV-272: explicit off switch for implicit placements, even when
-   *  `onImplicitPaywall` is set. Defaults to whether that handler is present. */
+   *  `onImplicitPaywall` is set. Defaults to whether that handler is present.
+   *  Does not stop `handleDeepLink` from reporting the link it is handed —
+   *  that report still lands the link's attribution facts on the customer,
+   *  it just never presents a paywall for an ordinary deep link. A dashboard
+   *  preview link is the exception: it always presents. */
   implicitPlacements?: boolean;
   /** REV-272: how the SDK learns the app came to the foreground, which is what
    *  `session_start` is built on. Defaults to a `visibilitychange` listener in
