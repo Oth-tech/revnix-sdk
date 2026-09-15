@@ -150,16 +150,7 @@ export class RevnixClient {
   private readonly onImplicitPaywall?: RevnixConfig["onImplicitPaywall"];
   private readonly implicitEnabled: boolean;
   private readonly sessionTimeoutMs: number;
-  /** Which of the six this app has configured, fetched ONCE. The whole cost
-   *  story: an app that configured none never resolves an implicit placement
-   *  again for the rest of the session. */
   private implicitConfigPromise: Promise<ReadonlySet<string>> | null = null;
-  /** After a FAILED config read, no request is made again before this. An
-   *  offline launch must not cost a fresh /v1/config on every paywall close
-   *  and every deep link — but "the next launch" is too long to wait for a
-   *  deep link opened an hour later on good network. One minute is the
-   *  middle: a burst of interactions costs one probe, a real recovery is
-   *  noticed within the minute. */
   private implicitConfigRetryAt = 0;
   private lifecycleUnsubscribe: (() => void) | null = null;
   /** The cold-start batch while it runs, resolving to whether it presented a
@@ -887,9 +878,11 @@ export class RevnixClient {
    *  goes to your entry point, and an SDK intercepting it would be fighting
    *  your router.
    *
-   *  Fire-and-forget: never blocks, never throws. An ordinary link does
-   *  nothing unless `deeplink_open` is configured in the dashboard; a
-   *  dashboard preview link is always handed to `onImplicitPaywall`. */
+   *  Fire-and-forget: never blocks, never throws. An ordinary link is
+   *  always reported so its `link.*` facts land on the customer; it only
+   *  presents a paywall when implicit placements are on AND `deeplink_open`
+   *  is configured in the dashboard. A dashboard preview link is always
+   *  handed to `onImplicitPaywall`. */
   handleDeepLink(url: string): void {
     const previewToken = PREVIEW_TOKEN_RE.exec(url)?.[1];
     if (previewToken !== undefined) {
@@ -984,11 +977,6 @@ export class RevnixClient {
       .catch((err) => this.diag("handleInstallReferrer", err));
   }
 
-  /** REV-272: which of the six this app has configured, asked ONCE per client
-   *  and shared by every trigger after it. A failure answers "none" rather
-   *  than throwing or retrying forever — implicit placements are a bonus on
-   *  top of the app, and a /v1/config that is down must cost the bonus and
-   *  nothing else. The next launch asks again. */
   private implicitConfig(): Promise<ReadonlySet<string>> {
     if (this.implicitConfigPromise === null && Date.now() < this.implicitConfigRetryAt) {
       return Promise.resolve(new Set<string>());
@@ -1038,17 +1026,14 @@ export class RevnixClient {
     extra: Record<string, string> | undefined,
     present: boolean
   ): Promise<boolean> {
-    if (!this.implicitEnabled || this.disposed) return false;
-    const configured = await this.implicitConfig();
-    // The common case for five of the six in most apps: nothing attached,
-    // so nothing is sent and no ledger row is written.
-    if (!configured.has(placement)) return false;
     if (this.disposed) return false;
-    // Same guard as resolvePlacement: an EPHEMERAL anon id changes every
-    // launch, so triggering with it would mint a phantom customer per
-    // launch and the server would serve the untargeted default anyway.
-    if (this.ephemeralAnonId) return false;
+    const configured = this.implicitEnabled
+      ? await this.implicitConfig()
+      : new Set<string>();
+    const resolve = configured.has(placement);
+    if (!resolve && placement !== "deeplink_open") return false;
     const customerId = await this.customerIdPromise;
+    if (this.disposed || this.ephemeralAnonId) return false;
     const deviceHeader = await this.deviceHeaderPromise;
     const result = await this.request<ImplicitResolution>(
       "POST",
@@ -1062,11 +1047,13 @@ export class RevnixClient {
         occurrenceId: generateViewId(),
         occurredAt: Date.now(),
         sdkVersion: SDK_VERSION,
+        ...(resolve ? null : { resolve: false }),
         ...extra,
       },
       deviceHeader ? { [DEVICE_HEADER]: deviceHeader } : undefined
     );
-    if (this.disposed || !result.paywall || !present) return false;
+    if (this.disposed || !resolve || !result.paywall || !present)
+      return false;
     try {
       this.onImplicitPaywall?.({ placement, resolution: result });
     } catch (err) {

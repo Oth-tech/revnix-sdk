@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- **Deep links always record their attribution.** `handleDeepLink` reports
+  every ordinary link, so its `link.*` attributes land on the customer with
+  no `onImplicitPaywall` handler and no `deeplink_open` placement. A paywall
+  still presents only when implicit placements are on and `deeplink_open`
+  is configured; otherwise the report carries `resolve: false` and the
+  server stores the link facts only. `/v1/config` is never fetched while
+  implicit placements are off.
+
 ## 1.1.2 (2026-09-14)
 
 ### Added

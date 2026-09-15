@@ -282,10 +282,12 @@ Six placements resolve without a `resolvePlacement` call: `app_install`,
 can attach a paywall to any of them from the dashboard with no release. Five
 need no app code; `deeplink_open` needs the `handleDeepLink` call shown
 below. **Off by default** — passing `onImplicitPaywall` is what turns
-them on; without it the SDK makes no extra requests at all. With it, the SDK
-asks `GET /v1/config` once at construction and fires only for the moments the
-dashboard has configured, so an app that configured none costs one cached
-response per launch and nothing else.
+them on; without it the SDK makes no extra requests for the other five
+moments, though `handleDeepLink` always sends its one report regardless.
+With `onImplicitPaywall` set, the SDK asks `GET /v1/config` once at
+construction and fires only for the moments the dashboard has configured, so
+an app that configured none costs one cached response per launch and nothing
+else.
 
 ```ts
 Revnix.configure({
