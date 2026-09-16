@@ -337,6 +337,32 @@ frame waits for that decision. A close is a decline — never report one for a
 display that ended in a purchase. `sessionTimeoutMs` (default 30 min) is how
 long the app must be backgrounded for the return to count as a session.
 
+## Deferred deep links
+
+A click on a Revnix link (`https://<deployment>.convex.site/l/<appId>?deep_link=…`)
+sends Android to Google Play with the query string as the install referrer,
+and everything else to the App Store, remembering the click for up to an
+hour. `POST /v1/installs` (fired automatically on first launch) can come back
+with the link the install matched: exact on Android, from that install
+referrer; probabilistic on iOS, from a same-network click within the last
+hour, so it can be wrong on a shared network. Only a link whose scheme
+matches your app's configured URL scheme is ever returned. Pass
+`onDeferredDeepLink` to get it, delivered at most once per install; route the
+URL yourself, optionally also through `handleDeepLink` for `deeplink_open`
+paywall rules:
+
+```ts
+Revnix.configure({
+  apiKey, baseUrl, storage,
+  onDeferredDeepLink: (url, match) => router.push(url),
+});
+```
+
+On Android, the same link can also arrive later through the Play Install
+Referrer service; read it yourself and hand the raw string to
+`Revnix.client.handleInstallReferrer(referrer)`, which also feeds the
+`deferredDeepLink` response into the same `onDeferredDeepLink` handler.
+
 ## A/B tests
 
 `resolvePlacement` sends the current customer id, so a running A/B test on

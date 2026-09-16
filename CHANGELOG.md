@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- **`onDeferredDeepLink(url, match)`**: the link a customer clicked before
+  they had the app, delivered at most once per install — exact on Android
+  (from the Play Install Referrer), probabilistic on iOS (same-network click
+  within the last hour). `POST /v1/installs` returns it only when the link's
+  scheme matches the app's configured URL scheme; `handleInstallReferrer`
+  also feeds it. (REV-299)
+
 ### Changed
 
 - **Deep links always record their attribution.** `handleDeepLink` reports
