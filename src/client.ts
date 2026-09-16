@@ -43,6 +43,7 @@ import type {
 } from "./types.js";
 
 const CUSTOMER_ID_KEY = "revnix.customerId";
+const DEFERRED_DEEP_LINK_DELIVERED_KEY = "revnix.deferredDeepLinkDelivered";
 const ENTITLEMENTS_CACHE_KEY = "revnix.entitlements";
 const PENDING_PURCHASES_KEY = "revnix.pendingPurchases";
 const PLACEMENTS_CACHE_KEY = "revnix.placements";
@@ -84,6 +85,10 @@ const CLOCK_ROLLBACK_TOLERANCE_MS = 5 * 60 * 1000;
 interface PendingPurchase {
   customerId: string;
   input: RegisterPurchaseInput;
+}
+
+interface InstallResponse {
+  deferredDeepLink?: unknown;
 }
 
 // One queue entry per store charge — repeated failures collapse onto it, and
@@ -148,6 +153,8 @@ export class RevnixClient {
   // paywall — without a handler there is nothing to do with the answer, and
   // firing anyway would spend requests and ledger rows on nobody's behalf.
   private readonly onImplicitPaywall?: RevnixConfig["onImplicitPaywall"];
+  private readonly onDeferredDeepLink?: RevnixConfig["onDeferredDeepLink"];
+  private deferredDeepLinkClaimed = false;
   private readonly implicitEnabled: boolean;
   private readonly sessionTimeoutMs: number;
   private implicitConfigPromise: Promise<ReadonlySet<string>> | null = null;
@@ -207,6 +214,7 @@ export class RevnixClient {
     this.entitlementsTtlMs =
       config.entitlementsTtlMs ?? DEFAULT_ENTITLEMENTS_TTL_MS;
     this.onDiagnostic = config.onDiagnostic;
+    this.onDeferredDeepLink = config.onDeferredDeepLink;
     this.readYourWritesDelaysMs =
       config.readYourWritesDelaysMs ?? [250, 500, 1000, 2000];
     this.customerIdPromise = this.loadCustomerId(config.customerId);
@@ -966,7 +974,7 @@ export class RevnixClient {
     if (this.ephemeralAnonId) return;
     void this.customerIdPromise
       .then((customerId) =>
-        this.request("POST", "/v1/installs", {
+        this.request<InstallResponse>("POST", "/v1/installs", {
           customerId,
           occurredAt: Date.now(),
           sdkVersion: SDK_VERSION,
@@ -974,6 +982,7 @@ export class RevnixClient {
           ...this.installMetadata,
         })
       )
+      .then((body) => this.deliverDeferredDeepLink(body.deferredDeepLink))
       .catch((err) => this.diag("handleInstallReferrer", err));
   }
 
@@ -1186,6 +1195,32 @@ export class RevnixClient {
     }
   }
 
+  private async deliverDeferredDeepLink(link: unknown): Promise<void> {
+    if (this.disposed || !this.onDeferredDeepLink || this.deferredDeepLinkClaimed) return;
+    if (typeof link !== "object" || link === null) return;
+    const { url, match } = link as { url?: unknown; match?: unknown };
+    if (typeof url !== "string" || (match !== "exact" && match !== "probabilistic")) return;
+    this.deferredDeepLinkClaimed = true;
+    let delivered: string | null = null;
+    try {
+      delivered = await this.storage.getItem(DEFERRED_DEEP_LINK_DELIVERED_KEY);
+    } catch (err) {
+      this.diag("onDeferredDeepLink", err);
+    }
+    if (delivered !== null) return;
+    try {
+      await this.storage.setItem(DEFERRED_DEEP_LINK_DELIVERED_KEY, "1");
+    } catch (err) {
+      this.diag("onDeferredDeepLink", err);
+    }
+    if (this.disposed) return;
+    try {
+      this.onDeferredDeepLink(url, match);
+    } catch (err) {
+      this.diag("onDeferredDeepLink", err);
+    }
+  }
+
   private async loadCustomerId(initial?: string): Promise<string> {
     // REV-204 (L10): a throwing storage adapter (quota, corruption) used to
     // reject customerIdPromise FOREVER — every subsequent API call then
@@ -1225,12 +1260,14 @@ export class RevnixClient {
   /** Fire-and-forget install report (REV-093). Never blocks startup and
    *  never throws — the backend absorbs retries idempotently per id. */
   private reportInstall(customerId: string): void {
-    void this.request("POST", "/v1/installs", {
+    void this.request<InstallResponse>("POST", "/v1/installs", {
       customerId,
       occurredAt: Date.now(),
       sdkVersion: SDK_VERSION,
       ...this.installMetadata,
-    }).catch((err) => this.diag("reportInstall", err));
+    })
+      .then((body) => this.deliverDeferredDeepLink(body.deferredDeepLink))
+      .catch((err) => this.diag("reportInstall", err));
   }
 
   /** REV-268: assemble and encode the device facts once. Runtime-detected

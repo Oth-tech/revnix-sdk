@@ -108,6 +108,18 @@ export interface RevnixConfig {
    *  it just never presents a paywall for an ordinary deep link. A dashboard
    *  preview link is the exception: it always presents. */
   implicitPlacements?: boolean;
+  /** REV-299: the link the customer clicked before they had the app.
+   *  `POST /v1/installs` returns it whenever the install matched an ad click
+   *  (Android: exact, from the Play Install Referrer; iOS: probabilistic IP
+   *  match) — on Android that can be every referrer call. The SDK delivers it
+   *  to this handler at most once per install. Route it yourself — you may
+   *  also pass it to `handleDeepLink` for `deeplink_open` paywall rules.
+   *  Never throws into your app: an exception from this handler is reported
+   *  through `onDiagnostic` and swallowed. */
+  onDeferredDeepLink?: (
+    url: string,
+    match: "exact" | "probabilistic"
+  ) => void;
   /** REV-272: how the SDK learns the app came to the foreground, which is what
    *  `session_start` is built on. Defaults to a `visibilitychange` listener in
    *  a browser and to nothing under React Native — pass an adapter over
