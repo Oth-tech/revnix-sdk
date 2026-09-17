@@ -300,6 +300,11 @@ export interface IdentityInfo {
   linkedIds?: string[];
 }
 
+export interface LastDeepLink {
+  url: string;
+  receivedAt: number;
+}
+
 // ——— GET /v1/placements/{key}/offering ———
 
 export interface PlacementPackage {
