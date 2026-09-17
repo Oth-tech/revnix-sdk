@@ -986,6 +986,32 @@ export class RevnixClient {
       .catch((err) => this.diag("handleInstallReferrer", err));
   }
 
+  /** Unwraps a link an email provider rewrote through its click-tracking
+   *  domain into the deep link it points at. Never throws; returns `url`
+   *  unchanged on any failure. The result can still be an http(s) URL if the
+   *  chain could not be unwrapped, so check the scheme before routing on it. */
+  async resolveDeepLink(url: string): Promise<string> {
+    const trimmed = url.trim();
+    if (
+      trimmed.length === 0 ||
+      trimmed.length > 1024 ||
+      !/^https?:\/\//i.test(trimmed) ||
+      this.disposed
+    ) {
+      return url;
+    }
+    try {
+      const body = await this.request<{ url: string }>(
+        "GET",
+        `/v1/links/resolve?url=${encodeURIComponent(trimmed)}`
+      );
+      return typeof body.url === "string" && body.url.length > 0 ? body.url : url;
+    } catch (err) {
+      this.diag("resolveDeepLink", err);
+      return url;
+    }
+  }
+
   private implicitConfig(): Promise<ReadonlySet<string>> {
     if (this.implicitConfigPromise === null && Date.now() < this.implicitConfigRetryAt) {
       return Promise.resolve(new Set<string>());
