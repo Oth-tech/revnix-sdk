@@ -34,6 +34,7 @@ import type {
   IdentifyResult,
   IdentifyStrategy,
   IdentityInfo,
+  LastDeepLink,
   PaywallInteraction,
   PlacementResolution,
   RegisterPurchaseInput,
@@ -44,6 +45,7 @@ import type {
 
 const CUSTOMER_ID_KEY = "revnix.customerId";
 const DEFERRED_DEEP_LINK_DELIVERED_KEY = "revnix.deferredDeepLinkDelivered";
+const LAST_DEEP_LINK_KEY = "revnix.lastDeepLink";
 const ENTITLEMENTS_CACHE_KEY = "revnix.entitlements";
 const PENDING_PURCHASES_KEY = "revnix.pendingPurchases";
 const PLACEMENTS_CACHE_KEY = "revnix.placements";
@@ -155,6 +157,7 @@ export class RevnixClient {
   private readonly onImplicitPaywall?: RevnixConfig["onImplicitPaywall"];
   private readonly onDeferredDeepLink?: RevnixConfig["onDeferredDeepLink"];
   private deferredDeepLinkClaimed = false;
+  private lastDeepLinkWrite: Promise<void> = Promise.resolve();
   private readonly implicitEnabled: boolean;
   private readonly sessionTimeoutMs: number;
   private implicitConfigPromise: Promise<ReadonlySet<string>> | null = null;
@@ -899,6 +902,7 @@ export class RevnixClient {
       );
       return;
     }
+    void this.rememberDeepLink(url);
     const extra = { url: url.slice(0, 1024) };
     const batch = this.launchBatch;
     if (batch === null) {
@@ -913,6 +917,41 @@ export class RevnixClient {
         this.triggerImplicit("deeplink_open", extra, !launchPresented)
       )
       .catch((err) => this.diag("implicit:deeplink_open", err));
+  }
+
+  /** Most recent deep link seen via `handleDeepLink` or a delivered
+   *  deferred deep link. Null when none recorded. Never throws. */
+  async getLastDeepLink(): Promise<LastDeepLink | null> {
+    await this.lastDeepLinkWrite;
+    try {
+      const raw = await this.storage.getItem(LAST_DEEP_LINK_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        typeof parsed.url !== "string" ||
+        typeof parsed.receivedAt !== "number"
+      ) {
+        return null;
+      }
+      return { url: parsed.url, receivedAt: parsed.receivedAt };
+    } catch (err) {
+      this.diag("getLastDeepLink", err);
+      return null;
+    }
+  }
+
+  private rememberDeepLink(url: string): Promise<void> {
+    const entry: LastDeepLink = { url, receivedAt: Date.now() };
+    this.lastDeepLinkWrite = this.lastDeepLinkWrite.then(async () => {
+      try {
+        await this.storage.setItem(LAST_DEEP_LINK_KEY, JSON.stringify(entry));
+      } catch (err) {
+        this.diag("rememberDeepLink", err);
+      }
+    });
+    return this.lastDeepLinkWrite;
   }
 
   private async presentPreview(token: string): Promise<void> {
@@ -1240,6 +1279,7 @@ export class RevnixClient {
       this.diag("onDeferredDeepLink", err);
     }
     if (this.disposed) return;
+    void this.rememberDeepLink(url);
     try {
       this.onDeferredDeepLink(url, match);
     } catch (err) {

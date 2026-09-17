@@ -4,6 +4,9 @@
 
 ### Added
 
+- **`getLastDeepLink()`**: the most recent link seen by `handleDeepLink` or a
+  delivered deferred deep link, as `{ url, receivedAt }` or null, persisted on
+  the device so it can be read again after login or onboarding. Never throws.
 - **`onDeferredDeepLink(url, match)`**: the link a customer clicked before
   they had the app, delivered at most once per install — exact on Android
   (from the Play Install Referrer), probabilistic on iOS (same-network click

@@ -37,6 +37,7 @@ export type {
   IdentifyStrategy,
   IdentityInfo,
   ImplicitResolution,
+  LastDeepLink,
   PaywallConfig,
   PaywallInteraction,
   PaywallPurchaseOutcome,

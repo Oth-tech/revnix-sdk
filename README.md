@@ -377,6 +377,21 @@ A failure (bad input, network error) hands the URL back unchanged. The
 result can still be an http(s) URL if the chain could not be unwrapped, so
 check the scheme before routing on it.
 
+## Last deep link
+
+The SDK remembers the most recent link it saw, from either `handleDeepLink`
+or a delivered deferred deep link, so you can ask for it again later, for
+example after login or onboarding swallowed the original delivery:
+
+```ts
+const last = await Revnix.client.getLastDeepLink();
+if (last) router.push(last.url);
+```
+
+`last` is `{ url, receivedAt }` or `null` when nothing has been recorded yet.
+A dashboard preview link (`…?revnix_preview=<token>`) is never recorded. The
+value is not cleared on logout.
+
 ## A/B tests
 
 `resolvePlacement` sends the current customer id, so a running A/B test on
