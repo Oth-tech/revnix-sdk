@@ -363,6 +363,20 @@ Referrer service; read it yourself and hand the raw string to
 `Revnix.client.handleInstallReferrer(referrer)`, which also feeds the
 `deferredDeepLink` response into the same `onDeferredDeepLink` handler.
 
+An email service provider (Mailchimp, SendGrid) rewrites links through its
+own click-tracking domain before your customer ever sees them; pass those
+through `resolveDeepLink` first, then to your router and `handleDeepLink`:
+
+```ts
+const url = await Revnix.client.resolveDeepLink(clickedUrl);
+router.push(url);
+Revnix.client.handleDeepLink(url);
+```
+
+A failure (bad input, network error) hands the URL back unchanged. The
+result can still be an http(s) URL if the chain could not be unwrapped, so
+check the scheme before routing on it.
+
 ## A/B tests
 
 `resolvePlacement` sends the current customer id, so a running A/B test on

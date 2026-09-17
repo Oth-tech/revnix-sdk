@@ -10,6 +10,10 @@
   within the last hour). `POST /v1/installs` returns it only when the link's
   scheme matches the app's configured URL scheme; `handleInstallReferrer`
   also feeds it. (REV-299)
+- **`resolveDeepLink(url)`**: unwraps a link an email service provider
+  rewrote through its own click-tracking domain back into the original
+  app-scheme URL, so a Mailchimp/SendGrid click reaches your router intact.
+  Never throws; returns the input unchanged on any failure.
 
 ### Changed
 
