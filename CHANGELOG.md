@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.2 (2026-09-19)
+
 ### Added
 
 - **`getLastDeepLink()`**: the most recent link seen by `handleDeepLink` or a
