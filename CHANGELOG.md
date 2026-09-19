@@ -28,6 +28,13 @@
   server stores the link facts only. `/v1/config` is never fetched while
   implicit placements are off.
 
+### Fixed
+
+- **Preview resolutions match the `PlacementResolution` type.** The dashboard
+  preview route sends no `status` and a null `revision`; the resolution
+  handed to `onImplicitPaywall` now carries `status: "ok"` and `revision: 0`,
+  the same as the native SDKs.
+
 ## 1.1.2 (2026-09-14)
 
 ### Added
