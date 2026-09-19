@@ -805,8 +805,12 @@ describe("dashboard QR/link preview", () => {
   test("a preview link fetches the preview and hands it to onImplicitPaywall, never /v1/placements/triggered", async () => {
     const { impl, calls } = stubPreviewFetch();
     const seen: string[] = [];
+    const resolutions: { status: string; revision: number }[] = [];
     const client = makeClient(impl, {
-      onImplicitPaywall: (t) => seen.push(t.placement),
+      onImplicitPaywall: (t) => {
+        seen.push(t.placement);
+        resolutions.push(t.resolution);
+      },
     });
     await settle();
 
@@ -816,6 +820,7 @@ describe("dashboard QR/link preview", () => {
     expect(calls.map((c) => c.path)).toContain(`/v1/paywalls/preview/${TOKEN}`);
     expect(triggersIn(calls)).toHaveLength(0);
     expect(seen).toEqual([PREVIEW_PLACEMENT_KEY]);
+    expect(resolutions[0]).toMatchObject({ status: "ok", revision: 0 });
   });
 
   test("a preview on the first frame waits for the launch batch, presenting after it", async () => {

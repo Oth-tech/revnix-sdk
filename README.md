@@ -72,6 +72,14 @@ have full access.
 | `prefetchPlacements` | n/a | Placement keys resolved-and-cached at construction (fire-and-forget), so the session's first paywall renders even offline |
 | `onDiagnostic` | n/a | Callback invoked on every swallowed background failure (retry drains, prefetches, install/paywall reports, storage errors); see Diagnostics |
 | `fetch` | global fetch | Custom fetch (tests, polyfills) |
+| `onImplicitPaywall` | n/a | Handler for implicit placement moments (`app_launch`, `session_start`, etc.), configured in the dashboard |
+| `implicitPlacements` | whether `onImplicitPaywall` is set | Explicit off switch for implicit placements, even when `onImplicitPaywall` is set |
+| `onDeferredDeepLink` | n/a | Delivers the link the customer clicked before install, at most once. Ships in the release after 1.1.2 |
+| `lifecycle` | `visibilitychange` listener in a browser, nothing under React Native | How the SDK learns the app came to the foreground; `false` disables foreground detection |
+| `sessionTimeoutMs` | `1800000` (30 minutes) | How long the app must be backgrounded before the return counts as a new session |
+
+`getDeviceHeader()` returns the encoded `X-Revnix-Device` value this client
+sends, or `null` when `device: false`.
 
 **Storage:** pass a persistent `storage` adapter (MMKV/AsyncStorage on React
 Native). On the web, omitting it automatically falls back to `localStorage`.
@@ -558,6 +566,10 @@ load `react` / `react-native` (both are peer dependencies used only by `/ui`).
 | `setAttributes` | `POST /v1/customers/{id}/attributes` | any |
 | `identify` | `POST /v1/identify` | secret |
 | `alias` | `POST /v1/customers/{id}/alias` | secret |
+| implicit placement config | `GET /v1/config` | any |
+| implicit moments / `handleDeepLink` | `POST /v1/placements/triggered` | any |
+| dashboard preview link | `GET /v1/paywalls/preview/{token}` | any |
+| `resolveDeepLink` | `GET /v1/links/resolve` | any (ships in the release after 1.1.2) |
 
 ## Development
 

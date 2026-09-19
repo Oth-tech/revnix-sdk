@@ -971,6 +971,8 @@ export class RevnixClient {
         placement: PREVIEW_PLACEMENT_KEY,
         resolution: {
           ...resolution,
+          status: "ok",
+          revision: resolution.revision ?? 0,
           stale: false,
           fetchedAt: Date.now(),
           skipReason: null,
