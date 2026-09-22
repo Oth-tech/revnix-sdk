@@ -91,6 +91,7 @@ interface PendingPurchase {
 
 interface InstallResponse {
   deferredDeepLink?: unknown;
+  appleAttribution?: string;
 }
 
 // One queue entry per store charge — repeated failures collapse onto it, and
@@ -1025,6 +1026,50 @@ export class RevnixClient {
       )
       .then((body) => this.deliverDeferredDeepLink(body.deferredDeepLink))
       .catch((err) => this.diag("handleInstallReferrer", err));
+  }
+
+  /**
+   * AT9: the Apple Search Ads half of install attribution. `AAAttribution
+   * .attributionToken()` is an iOS framework call with no JavaScript
+   * binding, so a React Native host mints the token in a native module and
+   * hands it here — this package cannot mint it itself.
+   *
+   * Unlike `handleInstallReferrer`, this resolves to the server's verdict
+   * (`InstallResponse.appleAttribution`) rather than returning void, because
+   * a freshly minted token is unregistered on Apple's side for a few
+   * seconds and the server reports that as `"pending"`. The native iOS SDK
+   * retries on its own in that case; a host driving this manually needs the
+   * verdict to know whether a fresh token on the next cold start is worth
+   * trying. `"resolved"` (Apple named a campaign) and `"organic"` (Apple
+   * answered, not an ASA install) are final. Resolves to `undefined` when a
+   * guard held or the request failed — safe to leave unawaited.
+   *
+   * Same guards as `handleInstallReferrer`, same reasons: bails when
+   * disposed, when the trimmed token is empty, and when `ephemeralAnonId` is
+   * set, since an id that changes every launch would file the campaign
+   * against a customer nobody will see again.
+   */
+  handleAttributionToken(token: string): Promise<string | undefined> {
+    if (this.disposed || token.trim().length === 0) return Promise.resolve(undefined);
+    if (this.ephemeralAnonId) return Promise.resolve(undefined);
+    return this.customerIdPromise
+      .then((customerId) =>
+        this.request<InstallResponse>("POST", "/v1/installs", {
+          customerId,
+          occurredAt: Date.now(),
+          sdkVersion: SDK_VERSION,
+          attributionToken: token.slice(0, 2048),
+          ...this.installMetadata,
+        })
+      )
+      .then((body) => {
+        this.deliverDeferredDeepLink(body.deferredDeepLink);
+        return body.appleAttribution;
+      })
+      .catch((err) => {
+        this.diag("handleAttributionToken", err);
+        return undefined;
+      });
   }
 
   /** Unwraps a link an email provider rewrote through its click-tracking

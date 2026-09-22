@@ -385,6 +385,27 @@ A failure (bad input, network error) hands the URL back unchanged. The
 result can still be an http(s) URL if the chain could not be unwrapped, so
 check the scheme before routing on it.
 
+## Apple Search Ads attribution
+
+iOS-only, and only for a host that mints its own token: `AAAttribution
+.attributionToken()` is an iOS framework call with no JavaScript binding, so
+this package cannot read it for you. Mint it in a native module and hand the
+raw string to `Revnix.client.handleAttributionToken(token)`, which reports it
+alongside the install and resolves to Apple's verdict:
+
+```ts
+const verdict = await Revnix.client.handleAttributionToken(token);
+```
+
+- `"resolved"` — Apple named a Search Ads campaign. Final.
+- `"organic"` — Apple answered, but this was not an ASA install. Final.
+- `"pending"` — a freshly minted token is unregistered on Apple's side for a
+  few seconds; worth minting a fresh token and retrying on the next cold
+  start.
+
+Safe to leave unawaited — it never throws, and resolves to `undefined` if
+the client is disposed, the token is blank, or the request failed.
+
 ## Last deep link
 
 The SDK remembers the most recent link it saw, from either `handleDeepLink`
