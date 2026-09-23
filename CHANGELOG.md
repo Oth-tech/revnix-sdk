@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.2.3 (2026-09-22)
+
+### Added
+
+- **`handleAttributionToken(token)`**: the Apple Search Ads half of install
+  attribution. `AAAttribution.attributionToken()` has no JavaScript binding,
+  so a host mints the token in a native module and hands the raw string here;
+  it rides along with the install and resolves to Apple's verdict —
+  `"resolved"`, `"organic"`, or `"pending"` for a token Apple has not
+  registered yet, which is worth retrying with a fresh token on the next cold
+  start. Never throws.
+
 ## 1.2.2 (2026-09-19)
 
 ### Added
