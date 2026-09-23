@@ -75,6 +75,7 @@ have full access.
 | `onImplicitPaywall` | n/a | Handler for implicit placement moments (`app_launch`, `session_start`, etc.), configured in the dashboard |
 | `implicitPlacements` | whether `onImplicitPaywall` is set | Explicit off switch for implicit placements, even when `onImplicitPaywall` is set |
 | `onDeferredDeepLink` | n/a | Delivers the link the customer clicked before install, at most once. Ships in the release after 1.1.2 |
+| `onAttribution` | n/a | Fires after the cold-start install report and again whenever the install-attribution verdict changes. Turns on the background fetch for it |
 | `lifecycle` | `visibilitychange` listener in a browser, nothing under React Native | How the SDK learns the app came to the foreground; `false` disables foreground detection |
 | `sessionTimeoutMs` | `1800000` (30 minutes) | How long the app must be backgrounded before the return counts as a new session |
 
@@ -405,6 +406,35 @@ const verdict = await Revnix.client.handleAttributionToken(token);
 
 Safe to leave unawaited — it never throws, and resolves to `undefined` if
 the client is disposed, the token is blank, or the request failed.
+
+## Install attribution
+
+`GET /v1/customers/{id}/attribution` returns the install-attribution verdict
+for the current customer: `installMatch` (`"referrer"` / `"click"` /
+`"impression"` / `"organic"`), `attributedAt`, the campaign facts frozen at
+that judgment (`source`, `medium`, `campaign`, `term`, `content`), the
+evidence behind it (`referrerSource`, `matchSignals`), `linkToken`, and
+`reattributedAt` when a later signal re-attributed the customer.
+
+```ts
+const attribution = await Revnix.client.getAttribution();
+```
+
+`null` means no install has been recorded yet (a normal cold-start race) or
+the request failed. Pass `onAttribution` to be told about it instead of
+polling: it fires once after the cold-start install report resolves, and
+again whenever the verdict actually changes — a late Play referrer, an ASA
+token resolving, a re-attribution — de-duplicated so an unchanged verdict
+never fires twice.
+
+```ts
+Revnix.configure({
+  apiKey, baseUrl, storage,
+  onAttribution: (attribution) => analytics.setUserProperties(attribution),
+});
+```
+
+The SDK never fetches attribution on its own unless `onAttribution` is set.
 
 ## Last deep link
 

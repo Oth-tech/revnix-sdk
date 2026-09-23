@@ -39,6 +39,7 @@ import type {
   PlacementResolution,
   RegisterPurchaseInput,
   RegisterPurchaseResult,
+  RevnixAttribution,
   RevnixConfig,
   RevnixStorage,
 } from "./types.js";
@@ -46,6 +47,7 @@ import type {
 const CUSTOMER_ID_KEY = "revnix.customerId";
 const DEFERRED_DEEP_LINK_DELIVERED_KEY = "revnix.deferredDeepLinkDelivered";
 const LAST_DEEP_LINK_KEY = "revnix.lastDeepLink";
+const ATTRIBUTION_KEY = "revnix.attribution";
 const ENTITLEMENTS_CACHE_KEY = "revnix.entitlements";
 const PENDING_PURCHASES_KEY = "revnix.pendingPurchases";
 const PLACEMENTS_CACHE_KEY = "revnix.placements";
@@ -92,6 +94,11 @@ interface PendingPurchase {
 interface InstallResponse {
   deferredDeepLink?: unknown;
   appleAttribution?: string;
+}
+
+interface AttributionResponse extends Omit<RevnixAttribution, "installMatch" | "attributedAt"> {
+  installMatch: RevnixAttribution["installMatch"] | "unknown";
+  attributedAt?: number;
 }
 
 // One queue entry per store charge — repeated failures collapse onto it, and
@@ -157,6 +164,7 @@ export class RevnixClient {
   // firing anyway would spend requests and ledger rows on nobody's behalf.
   private readonly onImplicitPaywall?: RevnixConfig["onImplicitPaywall"];
   private readonly onDeferredDeepLink?: RevnixConfig["onDeferredDeepLink"];
+  private readonly onAttribution?: RevnixConfig["onAttribution"];
   private deferredDeepLinkClaimed = false;
   private lastDeepLinkWrite: Promise<void> = Promise.resolve();
   private readonly implicitEnabled: boolean;
@@ -219,6 +227,7 @@ export class RevnixClient {
       config.entitlementsTtlMs ?? DEFAULT_ENTITLEMENTS_TTL_MS;
     this.onDiagnostic = config.onDiagnostic;
     this.onDeferredDeepLink = config.onDeferredDeepLink;
+    this.onAttribution = config.onAttribution;
     this.readYourWritesDelaysMs =
       config.readYourWritesDelaysMs ?? [250, 500, 1000, 2000];
     this.customerIdPromise = this.loadCustomerId(config.customerId);
@@ -943,6 +952,57 @@ export class RevnixClient {
     }
   }
 
+  /** AT11: the install-attribution verdict for this customer — `null` when
+   *  none has been recorded yet (a normal cold-start race, matching the
+   *  server's `installMatch: "unknown"`) or when the read fails. Fetches
+   *  fresh on every call rather than caching in memory, since the point is
+   *  to answer with whatever the server currently believes; a changed
+   *  answer also reaches `onAttribution`, so a host that only wants updates
+   *  need not call this at all. Never throws. */
+  async getAttribution(): Promise<RevnixAttribution | null> {
+    if (this.disposed) return null;
+    try {
+      const customerId = await this.customerIdPromise;
+      const verdict = await this.request<AttributionResponse>(
+        "GET",
+        `/v1/customers/${encodeURIComponent(customerId)}/attribution`
+      );
+      if (verdict.installMatch === "unknown") return null;
+      const attribution = verdict as RevnixAttribution;
+      await this.deliverAttribution(attribution);
+      return attribution;
+    } catch (err) {
+      this.diag("getAttribution", err);
+      return null;
+    }
+  }
+
+  private refreshAttribution(): void {
+    if (this.onAttribution) void this.getAttribution();
+  }
+
+  private async deliverAttribution(attribution: RevnixAttribution): Promise<void> {
+    const serialized = JSON.stringify(attribution);
+    let cached: string | null = null;
+    try {
+      cached = await this.storage.getItem(ATTRIBUTION_KEY);
+    } catch (err) {
+      this.diag("onAttribution", err);
+    }
+    if (cached === serialized) return;
+    try {
+      await this.storage.setItem(ATTRIBUTION_KEY, serialized);
+    } catch (err) {
+      this.diag("onAttribution", err);
+    }
+    if (this.disposed || !this.onAttribution) return;
+    try {
+      this.onAttribution(attribution);
+    } catch (err) {
+      this.diag("onAttribution", err);
+    }
+  }
+
   private rememberDeepLink(url: string): Promise<void> {
     const entry: LastDeepLink = { url, receivedAt: Date.now() };
     this.lastDeepLinkWrite = this.lastDeepLinkWrite.then(async () => {
@@ -1024,7 +1084,10 @@ export class RevnixClient {
           ...this.installMetadata,
         })
       )
-      .then((body) => this.deliverDeferredDeepLink(body.deferredDeepLink))
+      .then((body) => {
+        this.refreshAttribution();
+        return this.deliverDeferredDeepLink(body.deferredDeepLink);
+      })
       .catch((err) => this.diag("handleInstallReferrer", err));
   }
 
@@ -1063,6 +1126,7 @@ export class RevnixClient {
         })
       )
       .then((body) => {
+        this.refreshAttribution();
         this.deliverDeferredDeepLink(body.deferredDeepLink);
         return body.appleAttribution;
       })
@@ -1379,7 +1443,10 @@ export class RevnixClient {
       sdkVersion: SDK_VERSION,
       ...this.installMetadata,
     })
-      .then((body) => this.deliverDeferredDeepLink(body.deferredDeepLink))
+      .then((body) => {
+        if (!this.ephemeralAnonId) this.refreshAttribution();
+        return this.deliverDeferredDeepLink(body.deferredDeepLink);
+      })
       .catch((err) => this.diag("reportInstall", err));
   }
 

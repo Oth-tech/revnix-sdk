@@ -129,6 +129,37 @@ export interface RevnixConfig {
   /** REV-272: how long the app must have been backgrounded for the return to
    *  count as a new session rather than an app switch. Default 30 minutes. */
   sessionTimeoutMs?: number;
+  /** AT11: called whenever the install-attribution verdict changes — a fresh
+   *  Play referrer, an ASA token resolving, or a re-attribution genuinely
+   *  changes the answer, so this can fire more than once across a session
+   *  (Adjust's `attributionChanged` semantics). Fired after the cold-start
+   *  install report resolves, and again after `handleInstallReferrer` or
+   *  `handleAttributionToken` bring in a late signal. Call `getAttribution()`
+   *  for the same answer on demand.
+   *  Never throws into your app: an exception from this handler is reported
+   *  through `onDiagnostic` and swallowed. */
+  onAttribution?: (attribution: RevnixAttribution) => void;
+}
+
+/** AT11: the install-attribution verdict — GET
+ *  /v1/customers/{id}/attribution. `installMatch: "unknown"` (no install
+ *  recorded yet, a normal cold-start race) is never sent to hosts as such;
+ *  `getAttribution()` and `onAttribution` both surface it as `null` instead,
+ *  so there is one "no attribution yet" representation, not two. */
+export interface RevnixAttribution {
+  installMatch: "referrer" | "click" | "impression" | "organic";
+  /** Unix ms. */
+  attributedAt: number;
+  /** Unix ms — set when the customer was later re-attributed. */
+  reattributedAt?: number;
+  linkToken?: string;
+  referrerSource?: string;
+  matchSignals?: string[];
+  source?: string;
+  medium?: string;
+  campaign?: string;
+  term?: string;
+  content?: string;
 }
 
 /** REV-272: what an implicit trigger resolves to — an ordinary placement

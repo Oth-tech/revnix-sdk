@@ -48,6 +48,7 @@ export type {
   PlacementResolution,
   RegisterPurchaseInput,
   RegisterPurchaseResult,
+  RevnixAttribution,
   RevnixConfig,
   RevnixDiagnostic,
   RevnixStorage,
