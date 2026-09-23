@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- **`getAttribution()` / `onAttribution`**: the install-attribution verdict —
+  `installMatch`, `attributedAt`, the campaign facts frozen at judgment time,
+  `linkToken`, and `reattributedAt` when a later signal re-attributed the
+  customer — from `GET /v1/customers/{id}/attribution`. `onAttribution` fires
+  after the cold-start install report and again whenever the verdict changes
+  (a late Play referrer, an ASA token resolving, a re-attribution),
+  de-duplicated via storage. The SDK never fetches it on its own unless
+  `onAttribution` is set. Never throws.
+
 ## 1.2.3 (2026-09-22)
 
 ### Added
