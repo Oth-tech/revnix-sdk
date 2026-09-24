@@ -12,6 +12,10 @@
   (a late Play referrer, an ASA token resolving, a re-attribution),
   de-duplicated via storage. The SDK never fetches it on its own unless
   `onAttribution` is set. Never throws.
+- **`session_start` now reports `previousSessionMs`**: the previous session's
+  wall-clock length (background time minus its start), sent on the next
+  session's trigger so the server can stamp it onto that prior
+  `session.started` event.
 
 ## 1.2.3 (2026-09-22)
 

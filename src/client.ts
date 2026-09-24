@@ -45,6 +45,8 @@ import type {
 } from "./types.js";
 
 const CUSTOMER_ID_KEY = "revnix.customerId";
+const SESSION_STARTED_AT_KEY = "revnix.sessionStartedAt";
+const LAST_BACKGROUND_AT_KEY = "revnix.lastBackgroundAt";
 const DEFERRED_DEEP_LINK_DELIVERED_KEY = "revnix.deferredDeepLinkDelivered";
 const LAST_DEEP_LINK_KEY = "revnix.lastDeepLink";
 const ATTRIBUTION_KEY = "revnix.attribution";
@@ -1195,7 +1197,7 @@ export class RevnixClient {
    *  the host or delay a frame. */
   private fireImplicit(
     placement: ImplicitPlacement,
-    extra?: Record<string, string>
+    extra?: Record<string, string | number>
   ): void {
     void this.triggerImplicit(placement, extra, true).catch((err) =>
       this.diag(`implicit:${placement}`, err)
@@ -1208,7 +1210,7 @@ export class RevnixClient {
    *  cold start to ONE paywall. Never throws past its caller's catch. */
   private async triggerImplicit(
     placement: ImplicitPlacement,
-    extra: Record<string, string> | undefined,
+    extra: Record<string, string | number> | undefined,
     present: boolean
   ): Promise<boolean> {
     if (this.disposed) return false;
@@ -1248,6 +1250,25 @@ export class RevnixClient {
     return true;
   }
 
+  private async consumePreviousSessionMs(): Promise<
+    Record<string, string | number> | undefined
+  > {
+    const [startedRaw, lastBgRaw] = await Promise.all([
+      this.storage.getItem(SESSION_STARTED_AT_KEY),
+      this.storage.getItem(LAST_BACKGROUND_AT_KEY),
+    ]);
+    const started = Number.parseInt(startedRaw ?? "", 10);
+    const lastBg = Number.parseInt(lastBgRaw ?? "", 10);
+    const extra =
+      Number.isFinite(started) &&
+      Number.isFinite(lastBg) &&
+      lastBg >= started
+        ? { previousSessionMs: lastBg - started }
+        : undefined;
+    await this.storage.setItem(SESSION_STARTED_AT_KEY, String(Date.now()));
+    return extra;
+  }
+
   /** REV-272: the launch-time moments, plus the foreground listener that
    *  `session_start` is built on.
    *
@@ -1285,6 +1306,12 @@ export class RevnixClient {
       }
     }
 
+    const sessionExtra = this.consumePreviousSessionMs().catch(
+      (err: unknown) => {
+        this.diag("session", err);
+        return undefined;
+      }
+    );
     this.launchBatch = this.customerIdPromise
       .then(async () => {
         if (this.disposed) return false;
@@ -1297,7 +1324,7 @@ export class RevnixClient {
         for (const placement of moments) {
           const shown: boolean = await this.triggerImplicit(
             placement,
-            undefined,
+            placement === "session_start" ? await sessionExtra : undefined,
             !presented
           ).catch((err: unknown) => {
             this.diag(`implicit:${placement}`, err);
@@ -1321,7 +1348,17 @@ export class RevnixClient {
     if (state === "background") {
       // First report wins: a platform that repeats "background" (a paused
       // Activity re-reporting) must not keep resetting the clock forward.
-      this.lastBackgroundAt ??= Date.now();
+      if (this.lastBackgroundAt === null) {
+        const now = Date.now();
+        this.lastBackgroundAt = now;
+        try {
+          void Promise.resolve(
+            this.storage.setItem(LAST_BACKGROUND_AT_KEY, String(now))
+          ).catch((err) => this.diag("session", err));
+        } catch (err) {
+          this.diag("session", err);
+        }
+      }
       return;
     }
     const since = this.lastBackgroundAt;
@@ -1337,7 +1374,12 @@ export class RevnixClient {
       // the operator turned off — or never fire one they turned on — until
       // the next cold start.
       this.implicitConfigPromise = null;
-      this.fireImplicit("session_start");
+      void this.consumePreviousSessionMs()
+        .catch((err) => {
+          this.diag("session", err);
+          return undefined;
+        })
+        .then((extra) => this.fireImplicit("session_start", extra));
     }
   }
 
