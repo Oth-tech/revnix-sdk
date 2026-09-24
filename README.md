@@ -290,7 +290,7 @@ Six placements resolve without a `resolvePlacement` call: `app_install`,
 `transaction_abandon` are moments the SDK recognises itself, so an operator
 can attach a paywall to any of them from the dashboard with no release. Five
 need no app code; `deeplink_open` needs the `handleDeepLink` call shown
-below. **Off by default** — passing `onImplicitPaywall` is what turns
+below on native (the web SDK reports the landing URL itself, see below). **Off by default** — passing `onImplicitPaywall` is what turns
 them on; without it the SDK makes no extra requests for the other five
 moments, though `handleDeepLink` always sends its one report regardless.
 With `onImplicitPaywall` set, the SDK asks `GET /v1/config` once at
@@ -325,6 +325,13 @@ both once, at module scope, not inside a component effect that can remount
 (StrictMode runs effects twice in development). A full JS reload (dev
 reload, an OTA update) makes `getInitialURL()` return the same URL again,
 and `handleDeepLink` would report that open twice.
+
+On the web (`document` present) the SDK does this step itself: a landing
+URL whose query carries `utm_*` or `revnix_link` is reported once at
+construction, no host code needed. Call `handleDeepLink` yourself only for
+client-side navigations or for URLs without those params — a call with the
+same landing URL is skipped once so it doesn't double-report; anything
+after that reports normally.
 
 `handleDeepLink` also recognises the dashboard's QR/link preview
 (`…?revnix_preview=<token>`) and routes it through the same

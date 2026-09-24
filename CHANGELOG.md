@@ -16,6 +16,11 @@
   wall-clock length (background time minus its start), sent on the next
   session's trigger so the server can stamp it onto that prior
   `session.started` event.
+- **Web: the landing URL is reported as a deep link** when `document` is
+  present and the query carries `utm_*` or `revnix_link` params, so web
+  visitors get `link.*` attribution with no host code; a host's own
+  `handleDeepLink` call with that same landing URL is skipped once to avoid
+  double-reporting.
 
 ## 1.2.3 (2026-09-22)
 

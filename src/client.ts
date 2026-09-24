@@ -168,6 +168,7 @@ export class RevnixClient {
   private readonly onDeferredDeepLink?: RevnixConfig["onDeferredDeepLink"];
   private readonly onAttribution?: RevnixConfig["onAttribution"];
   private deferredDeepLinkClaimed = false;
+  private landingUrl: string | null = null;
   private lastDeepLinkWrite: Promise<void> = Promise.resolve();
   private readonly implicitEnabled: boolean;
   private readonly sessionTimeoutMs: number;
@@ -255,6 +256,18 @@ export class RevnixClient {
     this.sessionTimeoutMs =
       config.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
     if (this.implicitEnabled) this.startImplicit(config.lifecycle);
+    const { document, location } = globalThis as {
+      document?: unknown;
+      location?: { href: string; search: string };
+    };
+    if (
+      document &&
+      location &&
+      /^\?(?:[^&]*&)*(utm_\w+|revnix_link)=/i.test(location.search)
+    ) {
+      this.handleDeepLink(location.href);
+      this.landingUrl = location.href;
+    }
   }
 
   /** The id every call is made as: the stored identified/canonical id, or a
@@ -907,6 +920,10 @@ export class RevnixClient {
    *  is configured in the dashboard. A dashboard preview link is always
    *  handed to `onImplicitPaywall`. */
   handleDeepLink(url: string): void {
+    if (url === this.landingUrl) {
+      this.landingUrl = null;
+      return;
+    }
     const previewToken = PREVIEW_TOKEN_RE.exec(url)?.[1];
     if (previewToken !== undefined) {
       void this.presentPreview(previewToken).catch((err) =>
