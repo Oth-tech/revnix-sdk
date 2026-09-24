@@ -656,6 +656,62 @@ describe("sessions", () => {
   });
 });
 
+describe("session length", () => {
+  test("a session's previousSessionMs is the time it spent backgrounded", async () => {
+    const { impl, calls } = stubFetch(["session_start"]);
+    const life = manualLifecycle();
+    const now = jest.spyOn(Date, "now");
+    const t0 = 1_700_000_000_000;
+    now.mockReturnValue(t0);
+    makeClient(impl, { onImplicitPaywall: () => undefined, lifecycle: life.lifecycle });
+    await settle();
+    const coldStart = triggersIn(calls).find((c) => c.body?.placement === "session_start");
+    expect(coldStart?.body?.previousSessionMs).toBeUndefined();
+
+    now.mockReturnValue(t0 + 10 * 60_000);
+    life.background();
+    now.mockReturnValue(t0 + 41 * 60_000);
+    life.foreground();
+    await settle();
+
+    const triggers = triggersIn(calls);
+    const nextSession = triggers[triggers.length - 1];
+    expect(nextSession?.body?.placement).toBe("session_start");
+    expect(nextSession?.body?.previousSessionMs).toBe(600_000);
+    expect(typeof nextSession?.body?.previousSessionMs).toBe("number");
+    now.mockRestore();
+  });
+
+  test("a cold start on the same storage sends the prior client's session length", async () => {
+    const storage = memoryStorage();
+    const { impl: implA } = stubFetch(["session_start"]);
+    const life = manualLifecycle();
+    const now = jest.spyOn(Date, "now");
+    const t0 = 1_700_000_000_000;
+    now.mockReturnValue(t0);
+    makeClient(implA, {
+      onImplicitPaywall: () => undefined,
+      lifecycle: life.lifecycle,
+      storage,
+    });
+    await settle();
+
+    now.mockReturnValue(t0 + 5 * 60_000);
+    life.background();
+
+    now.mockReturnValue(t0 + 2 * 60 * 60_000);
+    const { impl: implB, calls: callsB } = stubFetch(["session_start"]);
+    makeClient(implB, { onImplicitPaywall: () => undefined, storage });
+    await settle();
+
+    const coldStart = triggersIn(callsB).find(
+      (c) => c.body?.placement === "session_start"
+    );
+    expect(coldStart?.body?.previousSessionMs).toBe(300_000);
+    now.mockRestore();
+  });
+});
+
 describe("deep links", () => {
   test("handleDeepLink sends the URL, bounded", async () => {
     const { impl, calls } = stubFetch(["deeplink_open"]);
