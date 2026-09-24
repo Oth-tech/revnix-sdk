@@ -1,4 +1,4 @@
-import { describe, expect, jest, test } from "@jest/globals";
+import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import { RevnixClient } from "./client.js";
 import {
   browserLifecycle,
@@ -819,6 +819,139 @@ describe("deep links", () => {
     await settle();
 
     expect(triggersIn(calls)).toHaveLength(0);
+  });
+});
+
+describe("web attribution on load", () => {
+  const originalLocation = (globalThis as { location?: unknown }).location;
+  const originalDocument = (globalThis as { document?: unknown }).document;
+
+  afterEach(() => {
+    if (originalLocation === undefined) {
+      delete (globalThis as { location?: unknown }).location;
+    } else {
+      (globalThis as { location?: unknown }).location = originalLocation;
+    }
+    if (originalDocument === undefined) {
+      delete (globalThis as { document?: unknown }).document;
+    } else {
+      (globalThis as { document?: unknown }).document = originalDocument;
+    }
+  });
+
+  test("a landing URL carrying a utm_ param reports one deep link, unresolved", async () => {
+    const href = "https://s.example/?utm_source=ig&utm_campaign=eid";
+    (globalThis as { document?: unknown }).document = {};
+    (globalThis as { location?: unknown }).location = {
+      href,
+      search: "?utm_source=ig&utm_campaign=eid",
+    };
+    const { impl, calls } = stubFetch([]);
+    makeClient(impl);
+    await settle();
+
+    const triggers = triggersIn(calls);
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0]?.body?.placement).toBe("deeplink_open");
+    expect(triggers[0]?.body?.resolve).toBe(false);
+    expect(triggers[0]?.body?.url).toBe(href);
+  });
+
+  test("with app_launch and deeplink_open configured, the link reports after the launch batch and only one paywall presents", async () => {
+    const href = "https://s.example/?utm_source=ig";
+    (globalThis as { document?: unknown }).document = {};
+    (globalThis as { location?: unknown }).location = {
+      href,
+      search: "?utm_source=ig",
+    };
+    const { impl, calls } = stubFetch(["app_launch", "deeplink_open"]);
+    const seen: string[] = [];
+    makeClient(impl, { onImplicitPaywall: (t) => seen.push(t.placement) });
+    await settle();
+
+    const triggers = triggersIn(calls).map((c) => c.body?.placement);
+    expect(triggers[triggers.length - 1]).toBe("deeplink_open");
+    expect(triggers).toEqual(["app_launch", "deeplink_open"]);
+    expect(seen).toEqual(["app_launch"]);
+  });
+
+  test("a URL with no utm_/revnix_link param reports nothing; revnix_link alone still fires", async () => {
+    (globalThis as { document?: unknown }).document = {};
+    (globalThis as { location?: unknown }).location = {
+      href: "https://s.example/?page=2",
+      search: "?page=2",
+    };
+    const { impl: implA, calls: callsA } = stubFetch([]);
+    makeClient(implA);
+    await settle();
+    expect(triggersIn(callsA)).toHaveLength(0);
+
+    (globalThis as { location?: unknown }).location = {
+      href: "https://s.example/?revnix_link=abc",
+      search: "?revnix_link=abc",
+    };
+    const { impl: implB, calls: callsB } = stubFetch([]);
+    makeClient(implB);
+    await settle();
+    expect(triggersIn(callsB)).toHaveLength(1);
+  });
+
+  test("no globalThis.location: nothing is reported", async () => {
+    (globalThis as { document?: unknown }).document = {};
+    delete (globalThis as { location?: unknown }).location;
+    const { impl, calls } = stubFetch([]);
+    makeClient(impl);
+    await settle();
+    expect(triggersIn(calls)).toHaveLength(0);
+  });
+
+  test("no globalThis.document: a utm_ landing URL reports nothing", async () => {
+    delete (globalThis as { document?: unknown }).document;
+    (globalThis as { location?: unknown }).location = {
+      href: "https://s.example/?utm_source=ig",
+      search: "?utm_source=ig",
+    };
+    const { impl, calls } = stubFetch([]);
+    makeClient(impl);
+    await settle();
+    expect(triggersIn(calls)).toHaveLength(0);
+  });
+
+  test("a utm_ param nested inside another query value does not count as top-level", async () => {
+    (globalThis as { document?: unknown }).document = {};
+    (globalThis as { location?: unknown }).location = {
+      href: "https://s.example/?redirect=/x?utm_source=a",
+      search: "?redirect=/x?utm_source=a",
+    };
+    const { impl: implA, calls: callsA } = stubFetch([]);
+    makeClient(implA);
+    await settle();
+    expect(triggersIn(callsA)).toHaveLength(0);
+
+    (globalThis as { location?: unknown }).location = {
+      href: "https://s.example/?a=1&utm_source=b",
+      search: "?a=1&utm_source=b",
+    };
+    const { impl: implB, calls: callsB } = stubFetch([]);
+    makeClient(implB);
+    await settle();
+    expect(triggersIn(callsB)).toHaveLength(1);
+  });
+
+  test("a host calling handleDeepLink(location.href) right after construction does not double-report", async () => {
+    const href = "https://s.example/?utm_source=ig";
+    (globalThis as { document?: unknown }).document = {};
+    (globalThis as { location?: unknown }).location = { href, search: "?utm_source=ig" };
+    const { impl, calls } = stubFetch([]);
+    const client = makeClient(impl);
+    await settle();
+    client.handleDeepLink(href);
+    await settle();
+    expect(triggersIn(calls)).toHaveLength(1);
+
+    client.handleDeepLink(href);
+    await settle();
+    expect(triggersIn(calls)).toHaveLength(2);
   });
 });
 
