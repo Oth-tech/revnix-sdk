@@ -26,6 +26,7 @@ import {
   type RevnixLifecycle,
 } from "./implicit.js";
 import type {
+  AdRevenue,
   AliasResult,
   ImplicitResolution,
   DeviceFacts,
@@ -857,6 +858,31 @@ export class RevnixClient {
         options?.paywallId
       );
     }
+  }
+
+  /** Reports one ad impression's payout (POST /v1/ad-revenue).
+   *  Fire-and-forget like the other beacons: never blocks, never throws. */
+  logAdRevenue(input: AdRevenue): void {
+    if (!Number.isFinite(input.revenue) || input.revenue <= 0) {
+      this.diag("logAdRevenue", new Error("revenue must be a finite number > 0"));
+      return;
+    }
+    void this.customerIdPromise
+      .then((customerId) =>
+        this.request("POST", "/v1/ad-revenue", {
+          customerId,
+          occurredAt: Date.now(),
+          revenue: input.revenue,
+          currency: input.currency,
+          ...(input.network ? { network: input.network } : {}),
+          ...(input.mediation ? { mediation: input.mediation } : {}),
+          ...(input.adUnit ? { adUnit: input.adUnit } : {}),
+          ...(input.placement ? { placement: input.placement } : {}),
+          ...(input.format ? { format: input.format } : {}),
+          ...(input.eventId ? { eventId: input.eventId } : {}),
+        })
+      )
+      .catch((err) => this.diag("logAdRevenue", err));
   }
 
   /** REV-272: the two moments that happen ON a paywall, with the loop guard

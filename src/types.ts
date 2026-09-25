@@ -488,3 +488,21 @@ export interface PaywallPurchaseOutcome {
   code?: string;
   message?: string;
 }
+
+/** Input for `logAdRevenue` — one ad impression's payout. */
+export interface AdRevenue {
+  /** Major units, e.g. 0.0032. Must be > 0. */
+  revenue: number;
+  /** ISO 4217, e.g. "USD". */
+  currency: string;
+  /** Monetization network that paid, e.g. "admob". */
+  network?: string;
+  /** Mediation platform that reported it, e.g. "applovin_max". */
+  mediation?: string;
+  adUnit?: string;
+  placement?: string;
+  /** "banner" | "interstitial" | "rewarded" | … free text. */
+  format?: string;
+  /** Idempotency key for this impression; omit to let the server generate one. */
+  eventId?: string;
+}

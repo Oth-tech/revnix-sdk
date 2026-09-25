@@ -27,6 +27,7 @@ export {
   type RevnixLifecycle,
 } from "./implicit.js";
 export type {
+  AdRevenue,
   AliasResult,
   CustomerEntitlements,
   DeviceFacts,
