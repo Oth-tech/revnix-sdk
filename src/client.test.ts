@@ -522,6 +522,56 @@ describe("paywall view reporting", () => {
   });
 });
 
+describe("logAdRevenue", () => {
+  test("posts revenue, currency and only the set optional fields", async () => {
+    const fetchImpl = mockFetch({
+      status: 201,
+      body: { eventId: "evt1", seq: 1, duplicate: false },
+    });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    const id = await client.getCustomerId();
+
+    client.logAdRevenue({
+      revenue: 0.0032,
+      currency: "USD",
+      network: "admob",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const call = lastCall(fetchImpl);
+    expect(call.url).toBe("https://demo.convex.site/v1/ad-revenue");
+    expect(call.method).toBe("POST");
+    expect(call.body).toMatchObject({
+      customerId: id,
+      revenue: 0.0032,
+      currency: "USD",
+      network: "admob",
+    });
+    expect(call.body.mediation).toBeUndefined();
+    expect(call.body.adUnit).toBeUndefined();
+  });
+
+  test("a non-positive revenue sends nothing", async () => {
+    const fetchImpl = jest.fn<typeof fetch>();
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    await client.getCustomerId();
+
+    client.logAdRevenue({ revenue: 0, currency: "USD" });
+    client.logAdRevenue({ revenue: -1, currency: "USD" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 // CTO-SCALE-REVIEW M5: omitting `storage` used to silently run memory-only —
 // every launch a new anonymous customer + a new install report. Now the web
 // falls back to localStorage automatically, and truly memory-only mode warns

@@ -4,6 +4,10 @@
 
 ### Added
 
+- **`logAdRevenue(input)`**: report one ad impression's payout (revenue,
+  currency, and optional network/mediation/adUnit/placement/format) to
+  `POST /v1/ad-revenue`. Fire-and-forget, like the other beacons; a
+  non-positive or non-finite `revenue` sends nothing.
 - **`getAttribution()` / `onAttribution`**: the install-attribution verdict —
   `installMatch`, `attributedAt`, the campaign facts frozen at judgment time,
   `linkToken`, and `reattributedAt` when a later signal re-attributed the
