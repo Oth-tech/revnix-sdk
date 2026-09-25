@@ -33,7 +33,8 @@ Revnix.configure({
 `Revnix.configure()` returns the `RevnixClient`; afterwards `Revnix.client`
 is available anywhere (it throws if used before `configure`). Re-running
 `configure()` disposes the previous client first (stopping its retry drain,
-prefetches, and read-your-writes polls, safe under dev fast-refresh). You
+read-your-writes polls, implicit triggers and foreground listener, safe under
+dev fast-refresh). You
 can also construct `new RevnixClient(config)` directly; call `dispose()` when
 you discard one.
 
@@ -47,7 +48,7 @@ environment server-side; a test key can never write into production:
   paywall views/closes, and set non-reserved attributes.
 - **Secret** `rvx_sk_live_…` / `rvx_sk_test_…`: server-side only, never in
   an app binary. Additionally allowed to call `identify()`, `alias()` and
-  `getIdentity()` — the identity graph is server-only — plus the server-only
+  `getIdentity()` (the identity graph is server-only), plus the server-only
   grants/attributes endpoints.
 
 Calling a secret-gated method with a publishable key fails with
@@ -74,8 +75,8 @@ have full access.
 | `fetch` | global fetch | Custom fetch (tests, polyfills) |
 | `onImplicitPaywall` | n/a | Handler for implicit placement moments (`app_launch`, `session_start`, etc.), configured in the dashboard |
 | `implicitPlacements` | whether `onImplicitPaywall` is set | Explicit off switch for implicit placements, even when `onImplicitPaywall` is set |
-| `onDeferredDeepLink` | n/a | Delivers the link the customer clicked before install, at most once. Ships in the release after 1.1.2 |
-| `onAttribution` | n/a | Fires after the cold-start install report and again whenever the install-attribution verdict changes. Turns on the background fetch for it |
+| `onDeferredDeepLink` | n/a | Delivers the link the customer clicked before install, at most once. Since 1.2.2 |
+| `onAttribution` | n/a | Fires after the first-launch install report and whenever the install-attribution verdict changes. Turns on the background fetch for it (unreleased: ships in the release after 1.2.3) |
 | `lifecycle` | `visibilitychange` listener in a browser, nothing under React Native | How the SDK learns the app came to the foreground; `false` disables foreground detection |
 | `sessionTimeoutMs` | `1800000` (30 minutes) | How long the app must be backgrounded before the return counts as a new session |
 
@@ -109,9 +110,15 @@ import { RevnixClient } from "revnix-react";
 const revnix = new RevnixClient({
   apiKey: process.env.REVNIX_SECRET_KEY!,      // rvx_sk_…
   baseUrl: "https://<deployment>.convex.site",
+  customerId: deviceCustomerId,                // what the device sent from getCustomerId()
+  reportInstalls: false,
 });
 await revnix.identify(user.uid);        // on login, merges anonymous history
 ```
+
+Pass the device's id in as `customerId`: without it the server-side client
+generates its own anonymous id and merges that instead, so the device's
+history is never merged. Build one client per request.
 
 - `identify(userId, { strategy })`: `"merge"` (default) folds the anonymous
   history into the identified customer; `"block"` refuses when both ids
@@ -124,7 +131,7 @@ await revnix.identify(user.uid);        // on login, merges anonymous history
   alias must be a fresh id; use `identify()` to merge existing customers).
   Also secret-gated.
 - `getIdentity()`: resolves the current id's identity cluster:
-  `{ canonicalId, isAlias, anonymous, linkedIds }`. **Also secret-gated** —
+  `{ canonicalId, isAlias, anonymous, linkedIds }`. **Also secret-gated**:
   the response is an identity graph, so the server refuses publishable keys
   and the SDK throws `RevnixAuthError` locally on one, before any network call.
 - `logout()`: generates a fresh anonymous customer locally (never merges,
@@ -171,8 +178,8 @@ Repeated failures of the same purchase collapse to one queue entry.
 
 **Read-your-writes:** after a successful `registerPurchase` the SDK re-fetches
 entitlements until the response's ledger cursor covers the purchase, so
-`getEntitlements()` / `isEntitled()` right after buying never show
-pre-purchase state, and the offline cache is warm at exactly the moment it
+`getEntitlements()` / `isEntitled()` right after buying normally include the
+purchase, and the offline cache is warm at exactly the moment it
 matters. Tune or disable via `readYourWritesDelaysMs` (pass `[]` to disable).
 Each delay gets ±20% jitter, a 429's `Retry-After` is honored as extra sleep,
 and every poll bypasses the entitlements soft TTL so it always reads the
@@ -290,13 +297,17 @@ Six placements resolve without a `resolvePlacement` call: `app_install`,
 `transaction_abandon` are moments the SDK recognises itself, so an operator
 can attach a paywall to any of them from the dashboard with no release. Five
 need no app code; `deeplink_open` needs the `handleDeepLink` call shown
-below on native (the web SDK reports the landing URL itself, see below). **Off by default** — passing `onImplicitPaywall` is what turns
+below on native (the web SDK reports the landing URL itself, see below;
+unreleased: ships in the release after 1.2.3). **Off by default**: passing
+`onImplicitPaywall` is what turns
 them on; without it the SDK makes no extra requests for the other five
 moments, though `handleDeepLink` always sends its one report regardless.
 With `onImplicitPaywall` set, the SDK asks `GET /v1/config` once at
-construction and fires only for the moments the dashboard has configured, so
-an app that configured none costs one cached response per launch and nothing
-else.
+construction and fires for the moments the dashboard has configured plus
+`session_start`, which the server always lists so every app records
+`session.started`; an app that configured nothing costs one cached
+`/v1/config` response per launch and one `session_start` trigger per
+session.
 
 ```ts
 Revnix.configure({
@@ -313,55 +324,59 @@ Revnix.configure({
   },
 });
 
-// deeplink_open is the one moment the SDK cannot see itself — the URL
-// reaches your router:
+// deeplink_open is the one moment the SDK cannot see itself: the URL
+// reaches your router.
 Linking.getInitialURL().then((url) => url && Revnix.client.handleDeepLink(url));
 Linking.addEventListener("url", ({ url }) => Revnix.client.handleDeepLink(url));
 ```
 
-`getInitialURL()` is the cold start — the link that launched a closed app;
+`getInitialURL()` is the cold start (the link that launched a closed app);
 the `url` event is a link arriving while the app is already running. Run
 both once, at module scope, not inside a component effect that can remount
 (StrictMode runs effects twice in development). A full JS reload (dev
 reload, an OTA update) makes `getInitialURL()` return the same URL again,
 and `handleDeepLink` would report that open twice.
 
-On the web (`document` present) the SDK does this step itself: a landing
-URL whose query carries `utm_*` or `revnix_link` is reported once at
-construction, no host code needed. Call `handleDeepLink` yourself only for
-client-side navigations or for URLs without those params — a call with the
+On the web (`document` present) the SDK does this step itself (unreleased:
+ships in the release after 1.2.3; on 1.2.3 call
+`handleDeepLink(window.location.href)` yourself): a landing URL whose query
+carries `utm_*` or `revnix_link` is reported once at construction, no host
+code needed. Call `handleDeepLink` yourself only for client-side navigations
+or for URLs without those params. A call with the
 same landing URL is skipped once so it doesn't double-report; anything
 after that reports normally.
 
 `handleDeepLink` also recognises the dashboard's QR/link preview
 (`…?revnix_preview=<token>`) and routes it through the same
-`onImplicitPaywall` handler with `placement: "revnix_preview"` — no extra
+`onImplicitPaywall` handler with `placement: "revnix_preview"`, no extra
 wiring needed. Purchases are disabled on that display: `RevnixPaywall`
 (classic or designed) shows an alert instead of calling `onPurchase`, and no
 paywall view/close/interaction is sent to analytics for it. A host rendering
-`RevnixBlockPaywall` directly, without `RevnixPaywall`, is not covered — it
+`RevnixBlockPaywall` directly, without `RevnixPaywall`, is not covered: it
 takes no `placementKey` and has no way to know the display is a preview.
 
-The SDK never presents for you — it does not own your navigation stack. You
+The SDK never presents for you; it does not own your navigation stack. You
 get the same `PlacementResolution` as `resolvePlacement` returns. When you
 render it, **pass `resolution.placementKey` to `RevnixPaywall` /
 `logPaywallShown`**: that marks the display as implicit, which is the only
 thing that stops a `paywall_decline` paywall from firing `paywall_decline`
 again when dismissed. A cold start hands you at most one paywall (install →
 launch → session, first that resolves wins), and a deep link on the first
-frame waits for that decision. A close is a decline — never report one for a
+frame waits for that decision. A close is a decline: never report one for a
 display that ended in a purchase. `sessionTimeoutMs` (default 30 min) is how
 long the app must be backgrounded for the return to count as a session.
 
 ## Deferred deep links
 
-A click on a Revnix link (`https://<deployment>.convex.site/l/<appId>?deep_link=…`)
-sends Android to Google Play with the query string as the install referrer,
-and everything else to the App Store, remembering the click for up to an
-hour. `POST /v1/installs` (fired automatically on first launch) can come back
-with the link the install matched: exact on Android, from that install
-referrer; probabilistic on iOS, from a same-network click within the last
-hour, so it can be wrong on a shared network. Only a link whose scheme
+A click on a Revnix link (`https://<deployment>.convex.site/l/<token>`,
+created on the Links page) sends Android to Google Play with the link's query
+string as the install referrer, iOS to the App Store, and desktop to the
+link's fallback URL, and remembers every non-Android click for the link's
+click window (1 hour by default, set per link). `POST /v1/installs` (fired
+automatically on first launch) can come back with the link the install
+matched: exact on Android, from that install referrer; probabilistic on iOS,
+from a same-network click or impression within the link's window, so it can
+be wrong on a shared network. Only a link whose scheme
 matches your app's configured URL scheme is ever returned. Pass
 `onDeferredDeepLink` to get it, delivered at most once per install; route the
 URL yourself, optionally also through `handleDeepLink` for `deeplink_open`
@@ -405,16 +420,20 @@ alongside the install and resolves to Apple's verdict:
 const verdict = await Revnix.client.handleAttributionToken(token);
 ```
 
-- `"resolved"` — Apple named a Search Ads campaign. Final.
-- `"organic"` — Apple answered, but this was not an ASA install. Final.
-- `"pending"` — a freshly minted token is unregistered on Apple's side for a
+- `"resolved"`: Apple named a Search Ads campaign. Final.
+- `"organic"`: Apple answered, but this was not an ASA install. Final.
+- `"pending"`: a freshly minted token is unregistered on Apple's side for a
   few seconds; worth minting a fresh token and retrying on the next cold
   start.
 
-Safe to leave unawaited — it never throws, and resolves to `undefined` if
-the client is disposed, the token is blank, or the request failed.
+Safe to leave unawaited: it never throws, and resolves to `undefined` if
+the client is disposed, the token is blank, storage is memory-only, or the
+request failed.
 
 ## Install attribution
+
+Unreleased: `getAttribution()` and `onAttribution` ship in the release after
+1.2.3. On 1.2.3, call `GET /v1/customers/{id}/attribution` yourself.
 
 `GET /v1/customers/{id}/attribution` returns the install-attribution verdict
 for the current customer: `installMatch` (`"referrer"` / `"click"` /
@@ -429,10 +448,12 @@ const attribution = await Revnix.client.getAttribution();
 
 `null` means no install has been recorded yet (a normal cold-start race) or
 the request failed. Pass `onAttribution` to be told about it instead of
-polling: it fires once after the cold-start install report resolves, and
-again whenever the verdict actually changes — a late Play referrer, an ASA
-token resolving, a re-attribution — de-duplicated so an unchanged verdict
-never fires twice.
+polling: it fires after the first-launch install report resolves and after
+`handleInstallReferrer` / `handleAttributionToken`, whenever the verdict
+differs from the last one delivered (persisted, so an unchanged verdict never
+fires twice). The SDK does not poll: call `getAttribution()` (e.g. at launch)
+to pick up a later re-attribution, which also fires `onAttribution` when it
+changed.
 
 ```ts
 Revnix.configure({
@@ -442,6 +463,20 @@ Revnix.configure({
 ```
 
 The SDK never fetches attribution on its own unless `onAttribution` is set.
+
+## Ad revenue
+
+Unreleased: ships in the release after 1.2.3. On 1.2.3, call
+`POST /v1/ad-revenue` yourself.
+
+```ts
+Revnix.client.logAdRevenue({ revenue: 0.0032, currency: "USD", network: "admob" });
+```
+
+Input: `revenue` (major units, must be > 0), `currency` (ISO 4217), and
+optional `network`, `mediation`, `adUnit`, `placement`, `format`, `eventId`.
+Fire-and-forget: it never blocks or throws, and a non-positive or non-finite
+`revenue` sends nothing.
 
 ## Last deep link
 
@@ -514,9 +549,14 @@ device.
 
 The SDK swallows failures it can recover from (retry-queue drains, placement
 prefetches, install and paywall-view reports, storage read/write errors). `onDiagnostic` surfaces them: it is called with `{ op, error, at }` for every
-such failure (ops: `retryPendingPurchases`, `prefetchPlacement`,
+such failure (ops include `retryPendingPurchases`, `prefetchPlacement`,
 `waitForEntitlements`, `reportInstall`, `logPaywallShown`, `logPaywallClosed`,
-`logPaywallEvent`, `paywall.render`, `storageRead`, `storageWrite`);
+`logPaywallEvent`, `paywall.render`, `storageRead`, `storageWrite`,
+`handleInstallReferrer`, `handleAttributionToken`, `resolveDeepLink`,
+`getLastDeepLink`, `rememberDeepLink`, `onDeferredDeepLink`,
+`onImplicitPaywall`, `implicitConfig`, `implicitLaunch`,
+`implicit:<placement>`, `preview`, `lifecycleSubscribe`, `session`, and,
+unreleased, `getAttribution`, `onAttribution`, `logAdRevenue`);
 exceptions thrown by your callback are swallowed. The count of background
 failures since the last report also rides the next request as an
 `X-Revnix-Bg-Failures: <n>` header, so the backend can see silent client pain
@@ -525,8 +565,8 @@ non-JSON body (captive portal, misbehaving proxy) throws a *retryable*
 `RevnixError` instead of returning garbage.
 
 `paywall.render` is the one op nothing on the network produces: a block
-paywall reporting a paint string it could not read — a gradient, a clip, a
-tile size this build does not draw. `RevnixPaywall` routes those through
+paywall reporting a paint string it could not read (a gradient, a clip, a
+tile size this build does not draw). `RevnixPaywall` routes those through
 `client.reportRenderDiagnostic(message)`, so a host that already wired
 `onDiagnostic` sees render fallbacks with no new wiring. Call it yourself only
 if you are drawing paywall blocks with your own renderer.
@@ -594,7 +634,7 @@ if (!paywall || !offering) return null; // both are nullable; guard first
   double-dismiss can never count two. Without the close, a funnel knows how
   many saw the paywall but not how many left without buying.
 - `client.logPaywallEvent(event, viewId, options?)` reports what happened **in
-  between** — one of six: `selected`, `purchase_started`,
+  between**, one of six: `selected`, `purchase_started`,
   `purchase_abandoned`, `purchase_failed`, `restore`, `error`. `RevnixPaywall`
   sends `selected`, `purchase_started`, `restore` and a no-products `error`
   for you; the purchase *outcome* is yours, because your app performs the
@@ -627,7 +667,10 @@ load `react` / `react-native` (both are peer dependencies used only by `/ui`).
 | implicit placement config | `GET /v1/config` | any |
 | implicit moments / `handleDeepLink` | `POST /v1/placements/triggered` | any |
 | dashboard preview link | `GET /v1/paywalls/preview/{token}` | any |
-| `resolveDeepLink` | `GET /v1/links/resolve` | any (ships in the release after 1.1.2) |
+| `resolveDeepLink` | `GET /v1/links/resolve` | any (since 1.2.2) |
+| `handleInstallReferrer` / `handleAttributionToken` | `POST /v1/installs` | any |
+| `getAttribution` | `GET /v1/customers/{id}/attribution` | any (unreleased: ships in the release after 1.2.3) |
+| `logAdRevenue` | `POST /v1/ad-revenue` | any (unreleased: ships in the release after 1.2.3) |
 
 ## Development
 
