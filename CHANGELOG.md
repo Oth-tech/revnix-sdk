@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.4 (2026-09-26)
+
 ### Added
 
 - **`logAdRevenue(input)`**: report one ad impression's payout (revenue,
