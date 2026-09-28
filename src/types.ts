@@ -506,3 +506,23 @@ export interface AdRevenue {
   /** Idempotency key for this impression; omit to let the server generate one. */
   eventId?: string;
 }
+
+/** MMP that produced an attribution callback. */
+export type MmpProvider =
+  | "adjust"
+  | "appsflyer"
+  | "singular"
+  | "branch"
+  | "kochava"
+  | "tenjin"
+  | "airbridge";
+
+/** Input for `setAttribution` — the network/campaign an MMP's attribution
+ *  callback (Adjust, AppsFlyer, …) resolved for this install. */
+export interface MmpAttribution {
+  provider: MmpProvider;
+  network: string;
+  campaign?: string;
+  adGroup?: string;
+  creative?: string;
+}

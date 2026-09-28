@@ -36,6 +36,7 @@ import type {
   IdentifyStrategy,
   IdentityInfo,
   LastDeepLink,
+  MmpAttribution,
   PaywallInteraction,
   PlacementResolution,
   RegisterPurchaseInput,
@@ -54,6 +55,7 @@ const ATTRIBUTION_KEY = "revnix.attribution";
 const ENTITLEMENTS_CACHE_KEY = "revnix.entitlements";
 const PENDING_PURCHASES_KEY = "revnix.pendingPurchases";
 const PLACEMENTS_CACHE_KEY = "revnix.placements";
+const LAST_ATTRIBUTION_KEY = "revnix.lastAttribution";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 // REV-204 (L10): how many customers keep a cached entitlements snapshot.
@@ -883,6 +885,33 @@ export class RevnixClient {
         })
       )
       .catch((err) => this.diag("logAdRevenue", err));
+  }
+
+  /** PT11: forward an MMP's attribution callback (Adjust, AppsFlyer, …) so
+   *  Revnix credits revenue to the right network/campaign. */
+  setAttribution(attribution: MmpAttribution): void {
+    const payload = JSON.stringify({
+      provider: attribution.provider,
+      network: attribution.network,
+      campaign: attribution.campaign ?? null,
+      adGroup: attribution.adGroup ?? null,
+      creative: attribution.creative ?? null,
+    });
+    void this.customerIdPromise
+      .then(async (customerId) => {
+        const last = await this.storage.getItem(LAST_ATTRIBUTION_KEY);
+        if (last === payload) return;
+        await this.request("POST", "/v1/attribution", {
+          customerId,
+          provider: attribution.provider,
+          network: attribution.network,
+          ...(attribution.campaign ? { campaign: attribution.campaign } : {}),
+          ...(attribution.adGroup ? { adGroup: attribution.adGroup } : {}),
+          ...(attribution.creative ? { creative: attribution.creative } : {}),
+        });
+        await this.storage.setItem(LAST_ATTRIBUTION_KEY, payload);
+      })
+      .catch((err) => this.diag("setAttribution", err));
   }
 
   /** REV-272: the two moments that happen ON a paywall, with the loop guard

@@ -39,6 +39,8 @@ export type {
   IdentityInfo,
   ImplicitResolution,
   LastDeepLink,
+  MmpAttribution,
+  MmpProvider,
   PaywallConfig,
   PaywallInteraction,
   PaywallPurchaseOutcome,
