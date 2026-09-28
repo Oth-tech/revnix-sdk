@@ -478,6 +478,39 @@ optional `network`, `mediation`, `adUnit`, `placement`, `format`, `eventId`.
 Fire-and-forget: it never blocks or throws, and a non-positive or non-finite
 `revenue` sends nothing.
 
+## MMP attribution
+
+If you already run an MMP (Adjust, AppsFlyer, Singular, Branch, Kochava,
+Tenjin, Airbridge), call `setAttribution` from its attribution callback so
+Revnix credits revenue to the right network/campaign.
+
+```ts
+// Adjust's attribution callback
+adjustAttributionListener((attribution) => {
+  Revnix.client.setAttribution({
+    provider: "adjust",
+    network: attribution.network,
+    campaign: attribution.campaign,
+    adGroup: attribution.adgroup,
+    creative: attribution.creative,
+  });
+});
+
+// AppsFlyer's onConversionDataSuccess
+onConversionDataSuccess((data) => {
+  if (data.af_status === "Organic") return;
+  Revnix.client.setAttribution({
+    provider: "appsflyer",
+    network: data.media_source,
+    campaign: data.campaign,
+    adGroup: data.af_adset,
+    creative: data.af_ad,
+  });
+});
+```
+
+Fire-and-forget, like `logAdRevenue`: it never blocks or throws.
+
 ## Last deep link
 
 The SDK remembers the most recent link it saw, from either `handleDeepLink`

@@ -572,6 +572,59 @@ describe("logAdRevenue", () => {
   });
 });
 
+describe("setAttribution", () => {
+  test("posts provider, network and only the set optional fields", async () => {
+    const fetchImpl = mockFetch({ status: 200, body: {} });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    const id = await client.getCustomerId();
+
+    client.setAttribution({
+      provider: "adjust",
+      network: "Facebook Installs",
+      campaign: "summer_sale",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const call = lastCall(fetchImpl);
+    expect(call.url).toBe("https://demo.convex.site/v1/attribution");
+    expect(call.method).toBe("POST");
+    expect(call.body).toMatchObject({
+      customerId: id,
+      provider: "adjust",
+      network: "Facebook Installs",
+      campaign: "summer_sale",
+    });
+    expect(call.body.adGroup).toBeUndefined();
+    expect(call.body.creative).toBeUndefined();
+  });
+
+  test("an identical repeat sends nothing; a changed payload sends again", async () => {
+    const fetchImpl = mockFetch({ status: 200, body: {} });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    await client.getCustomerId();
+
+    client.setAttribution({ provider: "adjust", network: "Facebook Installs" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    client.setAttribution({ provider: "adjust", network: "Facebook Installs" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    client.setAttribution({ provider: "adjust", network: "Google Installs" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+});
+
 // CTO-SCALE-REVIEW M5: omitting `storage` used to silently run memory-only —
 // every launch a new anonymous customer + a new install report. Now the web
 // falls back to localStorage automatically, and truly memory-only mode warns

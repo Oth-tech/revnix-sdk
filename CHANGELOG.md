@@ -8,6 +8,10 @@
   currency, and optional network/mediation/adUnit/placement/format) to
   `POST /v1/ad-revenue`. Fire-and-forget, like the other beacons; a
   non-positive or non-finite `revenue` sends nothing.
+- **`setAttribution(attribution)`**: forward an MMP's attribution callback
+  (Adjust, AppsFlyer, Singular, Branch, Kochava, Tenjin, Airbridge) to
+  `POST /v1/attribution` so Revnix credits revenue to the right
+  network/campaign. Fire-and-forget, like `logAdRevenue`.
 - **`getAttribution()` / `onAttribution`**: the install-attribution verdict —
   `installMatch`, `attributedAt`, the campaign facts frozen at judgment time,
   `linkToken`, and `reattributedAt` when a later signal re-attributed the
