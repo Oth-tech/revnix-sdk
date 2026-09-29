@@ -56,6 +56,7 @@ const ENTITLEMENTS_CACHE_KEY = "revnix.entitlements";
 const PENDING_PURCHASES_KEY = "revnix.pendingPurchases";
 const PLACEMENTS_CACHE_KEY = "revnix.placements";
 const LAST_ATTRIBUTION_KEY = "revnix.lastAttribution";
+const LAST_PUSH_TOKEN_KEY = "revnix.lastPushToken";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 // REV-204 (L10): how many customers keep a cached entitlements snapshot.
@@ -143,6 +144,7 @@ export class RevnixClient {
     platform?: string;
     appVersion?: string;
   };
+  private readonly platform: string | undefined;
   // REV-268: the encoded X-Revnix-Device value, built once per client. Null
   // when the app opted out (`device: false`). Resolved asynchronously because
   // installedAt/firstOpen come from storage, which may be async.
@@ -225,6 +227,10 @@ export class RevnixClient {
     this.reportInstalls = (config.reportInstalls ?? true) && resolved.persistent;
     this.persistentStorage = resolved.persistent;
     this.installMetadata = config.installMetadata;
+    this.platform =
+      (config.device || undefined)?.platform ??
+      config.installMetadata?.platform ??
+      detectDeviceFacts().platform;
     this.deviceHeaderPromise = this.buildDeviceHeader(config.device);
     this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.offlineMaxCacheAgeMs =
@@ -912,6 +918,36 @@ export class RevnixClient {
         await this.storage.setItem(LAST_ATTRIBUTION_KEY, payload);
       })
       .catch((err) => this.diag("setAttribution", err));
+  }
+
+  /** Register this device's push token for uninstall measurement: Revnix
+   *  sends a daily silent probe and records `app.uninstalled` when APNs/FCM
+   *  report the token dead. iOS/Android only (no-op on web),
+   *  fire-and-forget. */
+  setPushToken(token: string): void {
+    const trimmed = token.trim();
+    if (!trimmed) return;
+    const platform = this.platform;
+    if (platform !== "ios" && platform !== "android") {
+      this.diag(
+        "setPushToken",
+        new Error("push tokens are only collected on iOS and Android")
+      );
+      return;
+    }
+    void this.customerIdPromise
+      .then(async (customerId) => {
+        const payload = JSON.stringify({ customerId, platform, token: trimmed });
+        const last = await this.storage.getItem(LAST_PUSH_TOKEN_KEY);
+        if (last === payload) return;
+        await this.request("POST", "/v1/push-token", {
+          customerId,
+          platform,
+          token: trimmed,
+        });
+        await this.storage.setItem(LAST_PUSH_TOKEN_KEY, payload);
+      })
+      .catch((err) => this.diag("setPushToken", err));
   }
 
   /** REV-272: the two moments that happen ON a paywall, with the loop guard
