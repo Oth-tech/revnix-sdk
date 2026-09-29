@@ -625,6 +625,85 @@ describe("setAttribution", () => {
   });
 });
 
+describe("setPushToken", () => {
+  test("posts once and dedupes an identical repeat", async () => {
+    const fetchImpl = mockFetch(
+      { status: 200, body: {} },
+      { status: 200, body: {} }
+    );
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+      device: { platform: "ios" },
+    });
+    const id = await client.getCustomerId();
+
+    client.setPushToken("abc123");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const call = lastCall(fetchImpl);
+    expect(call.url).toBe("https://demo.convex.site/v1/push-token");
+    expect(call.method).toBe("POST");
+    expect(call.body).toMatchObject({
+      customerId: id,
+      platform: "ios",
+      token: "abc123",
+    });
+
+    client.setPushToken("abc123");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    client.setPushToken("def456");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test("the same token re-posts for a new customer after logout", async () => {
+    const fetchImpl = mockFetch(
+      { status: 200, body: {} },
+      { status: 200, body: {} }
+    );
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+      device: { platform: "ios" },
+    });
+    await client.getCustomerId();
+
+    client.setPushToken("abc123");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    const newId = await client.logout();
+    client.setPushToken("abc123");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(lastCall(fetchImpl).body).toMatchObject({
+      customerId: newId,
+      platform: "ios",
+      token: "abc123",
+    });
+  });
+
+  test("skips on web", async () => {
+    const fetchImpl = mockFetch({ status: 200, body: {} });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+      device: { platform: "web" },
+    });
+    await client.getCustomerId();
+
+    client.setPushToken("abc123");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 // CTO-SCALE-REVIEW M5: omitting `storage` used to silently run memory-only —
 // every launch a new anonymous customer + a new install report. Now the web
 // falls back to localStorage automatically, and truly memory-only mode warns

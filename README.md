@@ -511,6 +511,30 @@ onConversionDataSuccess((data) => {
 
 Fire-and-forget, like `logAdRevenue`: it never blocks or throws.
 
+## Uninstall measurement
+
+Revnix measures uninstalls the way Adjust/AppsFlyer do: hand it the device's
+push token, and once a day a silent push probes every registered device;
+when APNs/FCM reports a token dead, the customer gets an `app.uninstalled`
+event. Register the token whenever your push library delivers or refreshes
+one:
+
+```ts
+// iOS: your push library's registration callback (APNs device token)
+// Android: your push library's onNewToken / getToken()
+messaging().onTokenRefresh((token) => Revnix.client.setPushToken(token));
+```
+
+Fire-and-forget, like `setAttribution`: it never blocks or throws, dedupes
+per customer+token, and the same token passed to `setPushToken` again after
+`logout()`/`identify()` changed the customer is sent again. **iOS/Android
+only** — on web it's a no-op, there is no device
+push token to collect. Requires the app to already have push set up (iOS:
+Push Notifications + Background Modes → Remote notifications capability;
+Android: Firebase Cloud Messaging); no notification permission needed, the
+probe is a silent/data-only message. See
+[Uninstall measurement](https://revnix.io/docs/uninstall-measurement).
+
 ## Last deep link
 
 The SDK remembers the most recent link it saw, from either `handleDeepLink`
@@ -704,6 +728,7 @@ load `react` / `react-native` (both are peer dependencies used only by `/ui`).
 | `handleInstallReferrer` / `handleAttributionToken` | `POST /v1/installs` | any |
 | `getAttribution` | `GET /v1/customers/{id}/attribution` | any (unreleased: ships in the release after 1.2.3) |
 | `logAdRevenue` | `POST /v1/ad-revenue` | any (unreleased: ships in the release after 1.2.3) |
+| `setPushToken` | `POST /v1/push-token` | any (unreleased: ships in the release after 1.2.3) |
 
 ## Development
 
