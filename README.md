@@ -478,6 +478,19 @@ optional `network`, `mediation`, `adUnit`, `placement`, `format`, `eventId`.
 Fire-and-forget: it never blocks or throws, and a non-positive or non-finite
 `revenue` sends nothing.
 
+## Custom events
+
+Report an in-app event Revnix doesn't already track — not a purchase, which
+reports through `registerPurchase`.
+
+```ts
+Revnix.client.track("level_up", { level: 5, difficulty: "hard" });
+```
+
+`event` must match `^[a-z0-9_]{1,64}$` and is recorded as `custom.<event>`;
+`properties` is an optional flat object of strings/numbers/booleans. An
+invalid `event` name sends nothing. Fire-and-forget, like `logAdRevenue`.
+
 ## MMP attribution
 
 If you already run an MMP (Adjust, AppsFlyer, Singular, Branch, Kochava,
@@ -613,7 +626,7 @@ such failure (ops include `retryPendingPurchases`, `prefetchPlacement`,
 `getLastDeepLink`, `rememberDeepLink`, `onDeferredDeepLink`,
 `onImplicitPaywall`, `implicitConfig`, `implicitLaunch`,
 `implicit:<placement>`, `preview`, `lifecycleSubscribe`, `session`, and,
-unreleased, `getAttribution`, `onAttribution`, `logAdRevenue`);
+unreleased, `getAttribution`, `onAttribution`, `logAdRevenue`, `track`);
 exceptions thrown by your callback are swallowed. The count of background
 failures since the last report also rides the next request as an
 `X-Revnix-Bg-Failures: <n>` header, so the backend can see silent client pain
@@ -729,6 +742,7 @@ load `react` / `react-native` (both are peer dependencies used only by `/ui`).
 | `getAttribution` | `GET /v1/customers/{id}/attribution` | any (unreleased: ships in the release after 1.2.3) |
 | `logAdRevenue` | `POST /v1/ad-revenue` | any (unreleased: ships in the release after 1.2.3) |
 | `setPushToken` | `POST /v1/push-token` | any (unreleased: ships in the release after 1.2.3) |
+| `track` | `POST /v1/events` | any (unreleased: ships in the release after 1.2.3) |
 
 ## Development
 

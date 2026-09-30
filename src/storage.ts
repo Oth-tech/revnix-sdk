@@ -86,3 +86,7 @@ export function generateAnonymousId(): string {
 export function generateViewId(): string {
   return `rvx_view_${randomHex(16)}`;
 }
+
+export function generateEventId(): string {
+  return `rvx_evt_${randomHex(16)}`;
+}

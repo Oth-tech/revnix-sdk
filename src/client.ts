@@ -6,7 +6,12 @@ import {
   RevnixRateLimitError,
   RevnixTimeoutError,
 } from "./errors.js";
-import { generateAnonymousId, generateViewId, resolveStorage } from "./storage.js";
+import {
+  generateAnonymousId,
+  generateEventId,
+  generateViewId,
+  resolveStorage,
+} from "./storage.js";
 import {
   DEVICE_HEADER,
   INSTALLED_AT_KEY,
@@ -891,6 +896,31 @@ export class RevnixClient {
         })
       )
       .catch((err) => this.diag("logAdRevenue", err));
+  }
+
+  /** Reports one custom in-app event (POST /v1/events), not for purchases.
+   *  Fire-and-forget like the other beacons: never blocks, never throws. */
+  track(
+    event: string,
+    properties?: Record<string, string | number | boolean>,
+    options?: { eventId?: string }
+  ): void {
+    if (!/^[a-z0-9_]{1,64}$/.test(event)) {
+      this.diag("track", new Error(`invalid event name: ${event}`));
+      return;
+    }
+    const eventId = options?.eventId ?? generateEventId();
+    void this.customerIdPromise
+      .then((customerId) =>
+        this.request("POST", "/v1/events", {
+          customerId,
+          event,
+          eventId,
+          occurredAt: Date.now(),
+          ...(properties ? { properties } : {}),
+        })
+      )
+      .catch((err) => this.diag("track", err));
   }
 
   /** PT11: forward an MMP's attribution callback (Adjust, AppsFlyer, …) so
