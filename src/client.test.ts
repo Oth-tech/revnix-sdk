@@ -572,6 +572,50 @@ describe("logAdRevenue", () => {
   });
 });
 
+describe("track", () => {
+  test("posts event, properties and a fresh eventId", async () => {
+    const fetchImpl = mockFetch({
+      status: 201,
+      body: { eventId: "evt1", seq: 1, duplicate: false },
+    });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    const id = await client.getCustomerId();
+
+    client.track("level_up", { level: 5, difficulty: "hard" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const call = lastCall(fetchImpl);
+    expect(call.url).toBe("https://demo.convex.site/v1/events");
+    expect(call.method).toBe("POST");
+    expect(call.body).toMatchObject({
+      customerId: id,
+      event: "level_up",
+      properties: { level: 5, difficulty: "hard" },
+    });
+    expect(call.body.eventId).toEqual(expect.any(String));
+    expect(call.body.eventId.length).toBeGreaterThan(0);
+  });
+
+  test("an invalid event name sends nothing", async () => {
+    const fetchImpl = jest.fn<typeof fetch>();
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    await client.getCustomerId();
+
+    client.track("Level Up");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 describe("setAttribution", () => {
   test("posts provider, network and only the set optional fields", async () => {
     const fetchImpl = mockFetch({ status: 200, body: {} });

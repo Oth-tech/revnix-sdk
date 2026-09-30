@@ -4,6 +4,11 @@
 
 ### Added
 
+- **`track(event, properties?, options?)`**: report one custom in-app event
+  to `POST /v1/events`, recorded as `custom.<event>` in the ledger. `event`
+  must match `^[a-z0-9_]{1,64}$`; an invalid name sends nothing. Not for
+  purchases — those report through `registerPurchase`. Fire-and-forget, like
+  `logAdRevenue`.
 - **`logAdRevenue(input)`**: report one ad impression's payout (revenue,
   currency, and optional network/mediation/adUnit/placement/format) to
   `POST /v1/ad-revenue`. Fire-and-forget, like the other beacons; a
