@@ -306,7 +306,7 @@ export class RevnixClient {
         403,
         `Revnix: ${method}() requires a secret key (rvx_sk_…) and must be ` +
           `called from your backend. A publishable key ships inside the app ` +
-          `binary, so it may not read or rewire the identity graph — send ` +
+          `binary, so it may not read or rewire the identity graph. Send ` +
           `the ids to your server and call ${method}() there. Never embed a ` +
           `secret key in the app.`
       );
