@@ -9,14 +9,22 @@
   must match `^[a-z0-9_]{1,64}$`; an invalid name sends nothing. Not for
   purchases — those report through `registerPurchase`. Fire-and-forget, like
   `logAdRevenue`.
-- **`logAdRevenue(input)`**: report one ad impression's payout (revenue,
-  currency, and optional network/mediation/adUnit/placement/format) to
-  `POST /v1/ad-revenue`. Fire-and-forget, like the other beacons; a
-  non-positive or non-finite `revenue` sends nothing.
 - **`setAttribution(attribution)`**: forward an MMP's attribution callback
   (Adjust, AppsFlyer, Singular, Branch, Kochava, Tenjin, Airbridge) to
   `POST /v1/attribution` so Revnix credits revenue to the right
   network/campaign. Fire-and-forget, like `logAdRevenue`.
+- **`setPushToken(token)`**: register the device's push token with
+  `POST /v1/push-token` so Revnix can measure uninstalls. Fire-and-forget,
+  like `logAdRevenue`.
+
+## 1.2.4 (2026-09-26)
+
+### Added
+
+- **`logAdRevenue(input)`**: report one ad impression's payout (revenue,
+  currency, and optional network/mediation/adUnit/placement/format) to
+  `POST /v1/ad-revenue`. Fire-and-forget, like the other beacons; a
+  non-positive or non-finite `revenue` sends nothing.
 - **`getAttribution()` / `onAttribution`**: the install-attribution verdict —
   `installMatch`, `attributedAt`, the campaign facts frozen at judgment time,
   `linkToken`, and `reattributedAt` when a later signal re-attributed the

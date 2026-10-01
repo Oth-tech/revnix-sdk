@@ -7,10 +7,6 @@
 # main merge commits only and no direct pushes, so there is no other way in),
 # publishes the merge commit, then tags it and cuts a GitHub release.
 #
-# The version always moves, even when nothing changed since the last tag —
-# the SDKs track revnix-app releases in lockstep by decision (2026-09-05).
-# A lockstep bump says so in the changelog entry it writes.
-#
 # Publishing uses npm trusted publishing (OIDC): no long-lived token. The
 # package's trusted publisher on npmjs.com must name this repo and this file.
 # An NPM_TOKEN secret, if present, is used instead — for a break-glass
@@ -104,7 +100,7 @@ jobs:
         run: |
           CURRENT=$(node -p "require('./package.json').version")
           if git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null; then
-            if git diff --quiet "v$CURRENT" HEAD -- . ':(exclude)CHANGELOG.md'; then
+            if git diff --quiet "v$CURRENT" HEAD -- . ':(exclude).github' ':(exclude)*.md'; then
               CHANGED=false
             else
               CHANGED=true
@@ -117,7 +113,7 @@ jobs:
           echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
 
       - name: Decide and apply the next version
-        if: steps.pending.outputs.pending != 'true'
+        if: steps.pending.outputs.pending != 'true' && (inputs.bump != 'auto' || steps.changed.outputs.changed != 'false')
         id: version
         run: |
           node scripts/release.mjs \
@@ -127,7 +123,7 @@ jobs:
             --notes-out "$RUNNER_TEMP/release-notes.md"
 
       - name: Refuse to reuse a version that already exists
-        if: steps.pending.outputs.pending != 'true'
+        if: steps.pending.outputs.pending != 'true' && (inputs.bump != 'auto' || steps.changed.outputs.changed != 'false')
         env:
           NEXT: ${{ steps.version.outputs.next }}
         run: |
@@ -143,11 +139,11 @@ jobs:
 
       # version.test.ts pins src/version.ts to package.json.
       - name: Test the bumped tree
-        if: steps.pending.outputs.pending != 'true'
+        if: steps.pending.outputs.pending != 'true' && (inputs.bump != 'auto' || steps.changed.outputs.changed != 'false')
         run: npm test
 
       - name: Land the bump through a pull request (main takes merge commits only)
-        if: steps.pending.outputs.pending != 'true'
+        if: steps.pending.outputs.pending != 'true' && (inputs.bump != 'auto' || steps.changed.outputs.changed != 'false')
         id: land
         env:
           NEXT: ${{ steps.version.outputs.next }}
@@ -184,6 +180,7 @@ jobs:
           echo "pr=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Resolve what to publish
+        if: steps.pending.outputs.pending == 'true' || inputs.bump != 'auto' || steps.changed.outputs.changed != 'false'
         id: pub
         env:
           PENDING: ${{ steps.pending.outputs.pending }}
@@ -197,6 +194,7 @@ jobs:
           fi
 
       - name: Publish to npm
+        if: steps.pending.outputs.pending == 'true' || inputs.bump != 'auto' || steps.changed.outputs.changed != 'false'
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -210,6 +208,7 @@ jobs:
           npm publish --access public
 
       - name: Tag and release
+        if: steps.pending.outputs.pending == 'true' || inputs.bump != 'auto' || steps.changed.outputs.changed != 'false'
         env:
           NEXT: ${{ steps.pub.outputs.next }}
           SHA: ${{ steps.pub.outputs.sha }}
@@ -232,18 +231,29 @@ jobs:
           CURRENT: ${{ steps.version.outputs.current }}
           NEXT: ${{ steps.pub.outputs.next }}
           LEVEL: ${{ steps.version.outputs.level }}
-          LOCKSTEP: ${{ steps.version.outputs.lockstep }}
           PR: ${{ steps.land.outputs.pr }}
           PENDING: ${{ steps.pending.outputs.pending }}
+          BUMP: ${{ inputs.bump }}
+          CHANGED: ${{ steps.changed.outputs.changed }}
           APP_SHA: ${{ inputs.app_sha }}
         run: |
+          if [ "$PENDING" != "true" ] && [ "$BUMP" = "auto" ] && [ "$CHANGED" = "false" ]; then
+            CURRENT=$(node -p "require('./package.json').version")
+            {
+              echo "## revnix-react: no release"
+              echo ""
+              echo "no changes since v$CURRENT, skipped"
+              echo "- status: ${{ job.status }}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           {
             echo "## revnix-react ${NEXT:-?}"
             echo ""
             if [ "$PENDING" = "true" ]; then
               echo "- published the version already on main (a previous run merged it but did not publish)"
             else
-              echo "- from ${CURRENT:-?} (${LEVEL:-?} bump, lockstep=${LOCKSTEP:-?})"
+              echo "- from ${CURRENT:-?} (${LEVEL:-?} bump)"
             fi
             [ -n "$PR" ] && echo "- release PR: $PR"
             [ -n "$APP_SHA" ] && echo "- revnix-app: $APP_SHA"
