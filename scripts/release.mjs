@@ -7,7 +7,7 @@
 //   ### Breaking   → major
 //   ### Added      → minor
 //   anything else  → patch      (### Changed, ### Fixed, or loose bullets)
-//   empty          → patch      (a lockstep bump: the note says so)
+//   empty          → patch
 //
 // Usage:
 //   node scripts/release.mjs --bump auto|major|minor|patch
@@ -62,12 +62,12 @@ const next = increment(current, level);
 
 // The body of the new version entry.
 let body = unreleased.body.trim();
-const lockstep = counts.total === 0;
-if (lockstep) {
+const noEntries = counts.total === 0;
+if (noEntries) {
   const ride = appSha ? ` ${appSha.slice(0, 7)}` : "";
   body = changed === true
     ? `Changes since ${current} were not recorded here; see the commit log.`
-    : `No SDK changes. Version moved in lockstep with revnix-app release${ride}; the package contents are identical to ${current}.`;
+    : `No SDK changes. Forced release${ride}; the package contents are identical to ${current}.`;
 }
 if (notes.length > 0) body = appendUnder(body, "Changed", notes);
 
@@ -75,14 +75,14 @@ const date = new Date().toISOString().slice(0, 10);
 const heading = `## ${next} (${date})`;
 const entry = `${heading}\n\n${body}\n\n`;
 
-const summaryLine = lockstep
-  ? `${level} bump, no changelog entries (lockstep)`
+const summaryLine = noEntries
+  ? `${level} bump, no changelog entries`
   : `${level} bump from Unreleased: ${Object.entries(counts)
       .filter(([k, v]) => k !== "total" && v > 0)
       .map(([k, v]) => `${v} ${k}`)
       .join(", ")}`;
 
-const result = { name: pkg.name, current, next, level, lockstep, summary: summaryLine };
+const result = { name: pkg.name, current, next, level, noEntries, summary: summaryLine };
 
 if (!dryRun) {
   const rewritten = unreleased.found
