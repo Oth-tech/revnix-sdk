@@ -49,7 +49,7 @@ export function resolveStorage(configured?: RevnixStorage): {
   }
 
   console.warn(
-    "[revnix] No `storage` adapter configured and no localStorage available — " +
+    "[revnix] No `storage` adapter configured and no localStorage available; " +
       "the customer id lives in memory only. Every launch will look like a NEW " +
       "anonymous customer: prior purchases won't be attached and analytics " +
       "would be inflated, so install reporting and experiment enrollment are " +
@@ -68,7 +68,7 @@ function randomHex(byteLength: number): string {
   // getRandomValues; older Node needs `globalThis.crypto = require("crypto").webcrypto`.
   if (!cryptoObj?.getRandomValues) {
     throw new Error(
-      "[revnix] crypto.getRandomValues is unavailable in this runtime — " +
+      "[revnix] crypto.getRandomValues is unavailable in this runtime; " +
         "cannot generate a secure customer id. Polyfill globalThis.crypto " +
         "or pass an explicit `customerId` in configure()."
     );

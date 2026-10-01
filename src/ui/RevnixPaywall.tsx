@@ -880,7 +880,7 @@ function ClassicPaywall(props: RevnixPaywallProps) {
       ) : null}
       {review?.author ? (
         <Text style={[styles.reviewAuthor, { color: theme.textSecondary }]}>
-          — {review.author}
+          {review.author}
         </Text>
       ) : null}
     </View>
