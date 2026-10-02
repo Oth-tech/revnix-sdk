@@ -10,7 +10,7 @@
 //   empty          → patch
 //
 // Usage:
-//   node scripts/release.mjs --bump auto|major|minor|patch
+//   node scripts/release.mjs --bump auto|major|minor|patch [--version <x.y.z>]
 //        [--app-sha <sha>] [--changed true|false] [--note "<bullet>"]...
 //        [--notes-out <file>] [--dry-run]
 //   node scripts/release.mjs --notes-for <version> [--notes-out <file>]
@@ -31,6 +31,7 @@ const dryRun = Boolean(args["dry-run"]);
 const changed = args.changed === undefined ? undefined : args.changed === "true";
 const notes = args.note ?? [];
 const appSha = (args["app-sha"] ?? "").trim();
+const wanted = (args.version ?? "").trim();
 
 if (!["auto", "major", "minor", "patch"].includes(bump)) {
   fail(`--bump must be auto|major|minor|patch, got ${bump}`);
@@ -47,18 +48,20 @@ if (args["notes-for"]) {
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 const current = pkg.version;
 if (!/^\d+\.\d+\.\d+$/.test(current)) fail(`package.json version ${current} is not x.y.z`);
+if (wanted && !/^\d+\.\d+\.\d+$/.test(wanted)) fail(`--version must be x.y.z, got ${wanted}`);
 
 const changelog = existsSync("CHANGELOG.md") ? readFileSync("CHANGELOG.md", "utf8") : "";
 const unreleased = readUnreleased(changelog);
 const counts = countBullets(unreleased.body);
 
 let level;
-if (bump !== "auto") level = bump;
+if (wanted) level = levelBetween(current, wanted);
+else if (bump !== "auto") level = bump;
 else if (counts.breaking > 0) level = "major";
 else if (counts.added > 0) level = "minor";
 else level = "patch";
 
-const next = increment(current, level);
+const next = wanted || increment(current, level);
 
 // The body of the new version entry.
 let body = unreleased.body.trim();
@@ -172,6 +175,13 @@ function countBullets(body) {
     if (/^[-*]\s+\S/.test(line)) { counts[section]++; counts.total++; }
   }
   return counts;
+}
+
+function levelBetween(current, next) {
+  const [a, b] = [current, next].map((v) => v.split(".").map(Number));
+  const i = a.findIndex((n, k) => n !== b[k]);
+  if (i === -1 || b[i] < a[i]) fail(`--version ${next} is not above ${current}`);
+  return ["major", "minor", "patch"][i];
 }
 
 function increment(version, level) {
