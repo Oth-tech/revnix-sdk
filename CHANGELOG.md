@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.3.0 (2026-10-02)
+
 ### Added
 
 - **`track(event, properties?, options?)`**: report one custom in-app event
