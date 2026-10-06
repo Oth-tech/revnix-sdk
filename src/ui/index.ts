@@ -33,9 +33,11 @@ export {
 } from "../blocks/background.js";
 export {
   detectLocale,
+  linkLabels,
   localeChain,
   localizeBlockDoc,
   normalizeLocale,
+  setLocale,
 } from "../blocks/locale.js";
 export { minorUnitsForCurrency, resolveTags } from "../blocks/tags.js";
 export type { FontFamilyMap, FontMapping } from "../blocks/style.js";

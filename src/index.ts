@@ -1,4 +1,5 @@
 import { RevnixClient } from "./client.js";
+import { setLocale } from "./blocks/locale.js";
 import type { RevnixConfig } from "./types.js";
 
 export { RevnixClient } from "./client.js";
@@ -71,6 +72,7 @@ export const Revnix = {
     instance = new RevnixClient(config);
     return instance;
   },
+  setLocale,
   get client(): RevnixClient {
     if (!instance) {
       throw new Error("Revnix: call Revnix.configure(...) before use");
