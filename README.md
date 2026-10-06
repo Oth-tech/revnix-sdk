@@ -76,7 +76,7 @@ have full access.
 | `onImplicitPaywall` | n/a | Handler for implicit placement moments (`app_launch`, `session_start`, etc.), configured in the dashboard |
 | `implicitPlacements` | whether `onImplicitPaywall` is set | Explicit off switch for implicit placements, even when `onImplicitPaywall` is set |
 | `onDeferredDeepLink` | n/a | Delivers the link the customer clicked before install, at most once. Since 1.2.2 |
-| `onAttribution` | n/a | Fires after the first-launch install report and whenever the install-attribution verdict changes. Turns on the background fetch for it (unreleased: ships in the release after 1.2.3) |
+| `onAttribution` | n/a | Fires after the first-launch install report and whenever the install-attribution verdict changes. Turns on the background fetch for it (since 1.2.4) |
 | `lifecycle` | `visibilitychange` listener in a browser, nothing under React Native | How the SDK learns the app came to the foreground; `false` disables foreground detection |
 | `sessionTimeoutMs` | `1800000` (30 minutes) | How long the app must be backgrounded before the return counts as a new session |
 
@@ -297,8 +297,8 @@ Six placements resolve without a `resolvePlacement` call: `app_install`,
 `transaction_abandon` are moments the SDK recognises itself, so an operator
 can attach a paywall to any of them from the dashboard with no release. Five
 need no app code; `deeplink_open` needs the `handleDeepLink` call shown
-below on native (the web SDK reports the landing URL itself, see below;
-unreleased: ships in the release after 1.2.3). **Off by default**: passing
+below on native (the web SDK reports the landing URL itself since 1.2.4, see
+below). **Off by default**: passing
 `onImplicitPaywall` is what turns
 them on; without it the SDK makes no extra requests for the other five
 moments, though `handleDeepLink` always sends its one report regardless.
@@ -337,9 +337,9 @@ both once, at module scope, not inside a component effect that can remount
 reload, an OTA update) makes `getInitialURL()` return the same URL again,
 and `handleDeepLink` would report that open twice.
 
-On the web (`document` present) the SDK does this step itself (unreleased:
-ships in the release after 1.2.3; on 1.2.3 call
-`handleDeepLink(window.location.href)` yourself): a landing URL whose query
+On the web (`document` present) the SDK does this step itself (since 1.2.4;
+on 1.2.3 call `handleDeepLink(window.location.href)` yourself): a landing
+URL whose query
 carries `utm_*` or `revnix_link` is reported once at construction, no host
 code needed. Call `handleDeepLink` yourself only for client-side navigations
 or for URLs without those params. A call with the
@@ -432,8 +432,8 @@ request failed.
 
 ## Install attribution
 
-Unreleased: `getAttribution()` and `onAttribution` ship in the release after
-1.2.3. On 1.2.3, call `GET /v1/customers/{id}/attribution` yourself.
+Needs 1.2.4 or later. On 1.2.3, call `GET /v1/customers/{id}/attribution`
+yourself.
 
 `GET /v1/customers/{id}/attribution` returns the install-attribution verdict
 for the current customer: `installMatch` (`"referrer"` / `"click"` /
@@ -466,8 +466,7 @@ The SDK never fetches attribution on its own unless `onAttribution` is set.
 
 ## Ad revenue
 
-Unreleased: ships in the release after 1.2.3. On 1.2.3, call
-`POST /v1/ad-revenue` yourself.
+Needs 1.2.4 or later. On 1.2.3, call `POST /v1/ad-revenue` yourself.
 
 ```ts
 Revnix.client.logAdRevenue({ revenue: 0.0032, currency: "USD", network: "admob" });
@@ -625,8 +624,9 @@ such failure (ops include `retryPendingPurchases`, `prefetchPlacement`,
 `handleInstallReferrer`, `handleAttributionToken`, `resolveDeepLink`,
 `getLastDeepLink`, `rememberDeepLink`, `onDeferredDeepLink`,
 `onImplicitPaywall`, `implicitConfig`, `implicitLaunch`,
-`implicit:<placement>`, `preview`, `lifecycleSubscribe`, `session`, and,
-unreleased, `getAttribution`, `onAttribution`, `logAdRevenue`, `track`);
+`implicit:<placement>`, `preview`, `lifecycleSubscribe`, `session`,
+`getAttribution`, `onAttribution`, `logAdRevenue`, `track`, `setAttribution`,
+`setPushToken`);
 exceptions thrown by your callback are swallowed. The count of background
 failures since the last report also rides the next request as an
 `X-Revnix-Bg-Failures: <n>` header, so the backend can see silent client pain
@@ -715,6 +715,18 @@ if (!paywall || !offering) return null; // both are nullable; guard first
   (`DEFAULT_PAYWALL_THEME` / `LIGHT_PAYWALL_THEME` are exported).
 - Selection can be controlled (`selectedPackageId` + `onSelectPackage`) or
   left internal (defaults to the highlighted package).
+- Pass `onClose` to let the customer dismiss: without it no close is drawn;
+  with `client` the close is reported as `paywall.closed`.
+- Designed (block) paywalls: `locale` picks the copy language (defaults to
+  the device's), `gradient` takes your LinearGradient (expo-linear-gradient
+  or react-native-linear-gradient), `blur` takes a BlurView,
+  `fontFamilyMap` maps design fonts to registered faces, `onDiagnostic`
+  receives render fallbacks when no `client` is passed.
+- Unreleased (on `main`, not in 1.3.0): `Revnix.setLocale(tag)` (also
+  exported from `revnix-react/ui`) forces every designed paywall mounted
+  after the call into `tag`'s language; `Revnix.setLocale()` clears it. A
+  `locale` prop still wins for that one view. The links block's Restore,
+  Terms and Privacy labels follow the paywall's language.
 
 The `/ui` entrypoint is separate from the core so pure-JS consumers never
 load `react` / `react-native` (both are peer dependencies used only by `/ui`).
@@ -739,10 +751,11 @@ load `react` / `react-native` (both are peer dependencies used only by `/ui`).
 | dashboard preview link | `GET /v1/paywalls/preview/{token}` | any |
 | `resolveDeepLink` | `GET /v1/links/resolve` | any (since 1.2.2) |
 | `handleInstallReferrer` / `handleAttributionToken` | `POST /v1/installs` | any |
-| `getAttribution` | `GET /v1/customers/{id}/attribution` | any (unreleased: ships in the release after 1.2.3) |
-| `logAdRevenue` | `POST /v1/ad-revenue` | any (unreleased: ships in the release after 1.2.3) |
-| `setPushToken` | `POST /v1/push-token` | any (unreleased: ships in the release after 1.2.3) |
-| `track` | `POST /v1/events` | any (unreleased: ships in the release after 1.2.3) |
+| `getAttribution` | `GET /v1/customers/{id}/attribution` | any (since 1.2.4) |
+| `logAdRevenue` | `POST /v1/ad-revenue` | any (since 1.2.4) |
+| `setPushToken` | `POST /v1/push-token` | any (since 1.3.0) |
+| `track` | `POST /v1/events` | any (since 1.3.0) |
+| `setAttribution` | `POST /v1/attribution` | any (since 1.3.0) |
 
 ## Development
 

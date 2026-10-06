@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- **`Revnix.setLocale(tag?)`** (also `setLocale` from `revnix-react/ui`):
+  forces every designed paywall mounted after the call into `tag`'s
+  language; no argument clears it.
+- `linkLabels(locale)` export.
+
+### Changed
+
+- The links block's Restore, Terms and Privacy labels are localized (43
+  languages, English fallback).
+
 ## 1.3.0 (2026-10-02)
 
 ### Added
