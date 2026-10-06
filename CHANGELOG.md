@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.4.0 (2026-10-06)
+
 ### Added
 
 - **`Revnix.setLocale(tag?)`** (also `setLocale` from `revnix-react/ui`):
