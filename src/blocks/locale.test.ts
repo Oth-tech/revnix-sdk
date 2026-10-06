@@ -1,5 +1,12 @@
-import { describe, expect, test } from "@jest/globals";
-import { localeChain, localizeBlockDoc, normalizeLocale } from "./locale.js";
+import { afterEach, describe, expect, test } from "@jest/globals";
+import {
+  detectLocale,
+  linkLabels,
+  localeChain,
+  localizeBlockDoc,
+  normalizeLocale,
+  setLocale,
+} from "./locale.js";
 import type { PaywallBlockDoc } from "./types.js";
 
 // REV-271. The dashboard writes the table; this SDK reads it. These tests are
@@ -102,5 +109,72 @@ describe("applying a language", () => {
     expect(localizeBlockDoc(spanish, "ja")).toBe(spanish);
     const plain = doc();
     expect(localizeBlockDoc(plain, "es")).toBe(plain);
+  });
+
+  test("sets defaultLocale to the resolved language", () => {
+    const out = localizeBlockDoc(doc({ locales: { es: {} } }), "es-MX");
+    expect(out.defaultLocale).toBe("es");
+  });
+});
+
+describe("linkLabels", () => {
+  test("resolves a language and its regional variants", () => {
+    expect(linkLabels("ur")).toEqual({
+      restore: "بحال کریں",
+      terms: "شرائط",
+      privacy: "رازداری",
+    });
+    expect(linkLabels("ur-PK")).toEqual(linkLabels("ur"));
+  });
+
+  test("Mandarin picks traditional script for TW/HK, simplified elsewhere", () => {
+    const hant = { restore: "恢復購買", terms: "條款", privacy: "隱私" };
+    const hans = { restore: "恢复购买", terms: "条款", privacy: "隐私" };
+    expect(linkLabels("zh-Hant-TW")).toEqual(hant);
+    expect(linkLabels("zh-TW")).toEqual(hant);
+    expect(linkLabels("zh-HK")).toEqual(hant);
+    expect(linkLabels("zh-Hans-HK")).toEqual(hans);
+    expect(linkLabels("zh-CN")).toEqual(hans);
+    expect(linkLabels("zh")).toEqual(hans);
+  });
+
+  test("legacy and macrolanguage aliases resolve to their modern tag", () => {
+    expect(linkLabels("iw")).toEqual({
+      restore: "שחזור",
+      terms: "תנאים",
+      privacy: "פרטיות",
+    });
+    expect(linkLabels("no")).toEqual({
+      restore: "Gjenopprett",
+      terms: "Vilkår",
+      privacy: "Personvern",
+    });
+  });
+
+  test("falls back to English when unknown, undefined or empty", () => {
+    const english = { restore: "Restore", terms: "Terms", privacy: "Privacy" };
+    expect(linkLabels("xx")).toEqual(english);
+    expect(linkLabels(undefined)).toEqual(english);
+    expect(linkLabels("")).toEqual(english);
+  });
+
+  test("underscores normalize same as hyphens", () => {
+    expect(linkLabels("pt_BR")).toEqual({
+      restore: "Restaurar",
+      terms: "Termos",
+      privacy: "Privacidade",
+    });
+  });
+});
+
+describe("setLocale", () => {
+  afterEach(() => setLocale(undefined));
+
+  test("overrides detectLocale until cleared", () => {
+    const detected = detectLocale();
+    setLocale("ur");
+    expect(detectLocale()).toBe("ur");
+    setLocale(undefined);
+    expect(detectLocale()).toBe(detected);
   });
 });

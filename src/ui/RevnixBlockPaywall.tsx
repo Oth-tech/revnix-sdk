@@ -59,7 +59,7 @@ import {
   coverPlacement,
   type ResolvedBackgroundImage,
 } from "../blocks/background.js";
-import { detectLocale, localizeBlockDoc } from "../blocks/locale.js";
+import { detectLocale, linkLabels, localizeBlockDoc } from "../blocks/locale.js";
 import { resolveTags } from "../blocks/tags.js";
 import {
   canvasMetrics,
@@ -1039,18 +1039,19 @@ function Block({
     case "links": {
       const open = (url?: string) =>
         url ? () => void Linking.openURL(url) : undefined;
+      const labels = linkLabels(ctx.doc.defaultLocale);
       const links: Array<{ label: string; onPress?: () => void }> = [];
       if (block.showRestore ?? true)
-        links.push({ label: "Restore", onPress: ctx.onRestore });
+        links.push({ label: labels.restore, onPress: ctx.onRestore });
       if (block.showTerms ?? true)
         links.push({
-          label: "Terms",
+          label: labels.terms,
           onPress:
             ctx.onTerms ?? open(block.termsUrl ?? ctx.footer?.termsUrl),
         });
       if (block.showPrivacy ?? true)
         links.push({
-          label: "Privacy",
+          label: labels.privacy,
           onPress:
             ctx.onPrivacy ?? open(block.privacyUrl ?? ctx.footer?.privacyUrl),
         });

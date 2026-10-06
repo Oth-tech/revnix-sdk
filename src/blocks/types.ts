@@ -309,7 +309,8 @@ export interface PaywallBlockDoc {
   fontFamily?: string;
   blocks: PaywallBlock[];
   /** REV-271: the language the blocks' own copy is written in. Absent = "en".
-   *  Never a key in `locales` — the tree IS that language's version. */
+   *  Never a key in a stored doc's `locales` — the tree IS that language's
+   *  version. A localized copy names the language it was localized to. */
   defaultLocale?: string;
   /** REV-271: translations, keyed by BCP-47 tag then by block string key
    *  (`<blockId>.text`, `<blockId>.items.0.title`, …). Only words differ per

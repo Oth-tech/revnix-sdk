@@ -85,11 +85,22 @@ export function localeChain(
   return chain;
 }
 
+let localeOverride: string | undefined;
+
+/** Forces the paywall language regardless of the device's, for a host whose
+ *  in-app language picker differs from the OS locale. `undefined` clears it.
+ *  Only paywalls MOUNTED AFTER this call pick it up — `detectLocale()` is
+ *  read once per doc/locale in a `useMemo`. */
+export function setLocale(tag?: string): void {
+  localeOverride = tag || undefined;
+}
+
 /** The device's language, for hosts that do not pass one. Hermes without the
  *  full ICU build has no `Intl`, and a React Native `navigator.language` is
  *  the JS engine's, not the device's — so this is best effort and a host that
  *  cares passes `locale` explicitly. */
 export function detectLocale(): string | undefined {
+  if (localeOverride !== undefined) return localeOverride;
   try {
     const resolved = new Intl.DateTimeFormat().resolvedOptions().locale;
     if (typeof resolved === "string" && resolved.length > 0) return resolved;
@@ -171,5 +182,90 @@ export function localizeBlockDoc(
     }
     return authored;
   };
-  return { ...doc, blocks: doc.blocks.map((b) => localizeBlock(b, lookup)) };
+  return {
+    ...doc,
+    defaultLocale: chain[0],
+    blocks: doc.blocks.map((b) => localizeBlock(b, lookup)),
+  };
+}
+
+const LINK_LABEL_ALIASES: Record<string, string> = {
+  iw: "he",
+  in: "id",
+  no: "nb",
+  tl: "fil",
+};
+
+const LINK_LABELS: Record<string, readonly [string, string, string]> = {
+  ar: ["استعادة", "الشروط", "الخصوصية"],
+  bg: ["Възстановяване", "Условия", "Поверителност"],
+  bn: ["পুনরুদ্ধার", "শর্তাবলী", "গোপনীয়তা"],
+  ca: ["Restaura", "Condicions", "Privadesa"],
+  cs: ["Obnovit", "Podmínky", "Soukromí"],
+  da: ["Gendan", "Vilkår", "Privatliv"],
+  de: ["Wiederherstellen", "AGB", "Datenschutz"],
+  el: ["Επαναφορά", "Όροι", "Απόρρητο"],
+  en: ["Restore", "Terms", "Privacy"],
+  es: ["Restaurar", "Términos", "Privacidad"],
+  et: ["Taasta", "Tingimused", "Privaatsus"],
+  fa: ["بازیابی", "شرایط", "حریم خصوصی"],
+  fi: ["Palauta", "Ehdot", "Tietosuoja"],
+  fil: ["I-restore", "Mga Tuntunin", "Privacy"],
+  fr: ["Restaurer", "Conditions", "Confidentialité"],
+  he: ["שחזור", "תנאים", "פרטיות"],
+  hi: ["पुनर्स्थापित करें", "शर्तें", "गोपनीयता"],
+  hr: ["Vrati", "Uvjeti", "Privatnost"],
+  hu: ["Visszaállítás", "Feltételek", "Adatvédelem"],
+  id: ["Pulihkan", "Ketentuan", "Privasi"],
+  it: ["Ripristina", "Termini", "Privacy"],
+  ja: ["購入を復元", "利用規約", "プライバシー"],
+  ko: ["구매 복원", "이용약관", "개인정보"],
+  lt: ["Atkurti", "Sąlygos", "Privatumas"],
+  lv: ["Atjaunot", "Noteikumi", "Privātums"],
+  ms: ["Pulihkan", "Terma", "Privasi"],
+  nb: ["Gjenopprett", "Vilkår", "Personvern"],
+  nl: ["Herstellen", "Voorwaarden", "Privacy"],
+  pl: ["Przywróć", "Regulamin", "Prywatność"],
+  pt: ["Restaurar", "Termos", "Privacidade"],
+  ro: ["Restaurează", "Termeni", "Confidențialitate"],
+  ru: ["Восстановить", "Условия", "Конфиденциальность"],
+  sk: ["Obnoviť", "Podmienky", "Súkromie"],
+  sl: ["Obnovi", "Pogoji", "Zasebnost"],
+  sr: ["Врати", "Услови", "Приватност"],
+  sv: ["Återställ", "Villkor", "Integritet"],
+  th: ["กู้คืน", "ข้อกำหนด", "ความเป็นส่วนตัว"],
+  tr: ["Geri Yükle", "Koşullar", "Gizlilik"],
+  uk: ["Відновити", "Умови", "Конфіденційність"],
+  ur: ["بحال کریں", "شرائط", "رازداری"],
+  vi: ["Khôi phục", "Điều khoản", "Quyền riêng tư"],
+  zh: ["恢复购买", "条款", "隐私"],
+  "zh-Hant": ["恢復購買", "條款", "隱私"],
+};
+
+/** The three built-in paywall footer labels (restore/terms/privacy), in the
+ *  language `locale` resolves to. Falls back to English for any language not
+ *  in the 43-entry table. Mandarin picks traditional script for Taiwan, Hong
+ *  Kong and Macau unless the tag is explicitly simplified. */
+export function linkLabels(
+  locale: string | undefined
+): { restore: string; terms: string; privacy: string } {
+  const [restore, terms, privacy] = LINK_LABELS[resolveLinkLabelTag(locale)]!;
+  return { restore, terms, privacy };
+}
+
+function resolveLinkLabelTag(locale: string | undefined): string {
+  const tag = normalizeLocale(locale);
+  if (tag === undefined) return "en";
+  const lang = baseLanguage(tag);
+  if (lang === "zh") {
+    const parts = tag.split("-").slice(1);
+    const hasHant = parts.includes("Hant");
+    const hasHans = parts.includes("Hans");
+    const region = parts.find((part) => /^[A-Z]{2}$/.test(part));
+    const isTraditionalRegion =
+      region !== undefined && ["TW", "HK", "MO"].includes(region);
+    return hasHant || (!hasHans && isTraditionalRegion) ? "zh-Hant" : "zh";
+  }
+  const base = LINK_LABEL_ALIASES[lang] ?? lang;
+  return base in LINK_LABELS ? base : "en";
 }
