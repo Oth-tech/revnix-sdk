@@ -1,21 +1,21 @@
-# revnix-react
+# react-native-revnix
 
 Revnix SDK for React Native / JavaScript. Pure TypeScript over the Revnix
 `/v1` REST API, no native modules, no dependencies. Pairs with
 `react-native-iap` (or any StoreKit 2 / Play Billing wrapper) for purchases.
 Ships CJS + ESM (tree-shakeable); every request carries an
-`X-Revnix-SDK: revnix-react/<version>` header (`SDK_VERSION` is exported).
+`X-Revnix-SDK: react-native-revnix/<version>` header (`SDK_VERSION` is exported).
 
 ## Install
 
 ```sh
-npm install revnix-react
+npm install react-native-revnix
 ```
 
 ## Setup
 
 ```ts
-import { Revnix } from "revnix-react";
+import { Revnix } from "react-native-revnix";
 import { MMKV } from "react-native-mmkv";
 
 const mmkv = new MMKV();
@@ -105,7 +105,7 @@ await Revnix.client.getCustomerId();   // rvx_anon_… until identified
 await Revnix.client.logout();           // fresh anonymous customer
 
 // server-side only (secret rvx_sk_ key, throws locally on a publishable key):
-import { RevnixClient } from "revnix-react";
+import { RevnixClient } from "react-native-revnix";
 
 const revnix = new RevnixClient({
   apiKey: process.env.REVNIX_SECRET_KEY!,      // rvx_sk_…
@@ -143,7 +143,7 @@ Set `appAccountToken` (iOS) / `obfuscatedAccountIdAndroid` to the Revnix
 customer id when requesting the purchase, then register it:
 
 ```ts
-import { purchaseInputFromIap, PurchaseBlockedError } from "revnix-react";
+import { purchaseInputFromIap, PurchaseBlockedError } from "react-native-revnix";
 
 // in your purchaseUpdatedListener, before finishTransaction:
 try {
@@ -674,7 +674,7 @@ and a `count` line under the CTA) and `config.offer` (struck-through anchor
 price on the highlighted package, urgency line above the CTA).
 
 ```tsx
-import { RevnixPaywall } from "revnix-react/ui";
+import { RevnixPaywall } from "react-native-revnix/ui";
 
 const { paywall, offering } = await Revnix.client.resolvePlacement("paywall_main");
 if (!paywall || !offering) return null; // both are nullable; guard first
@@ -723,7 +723,7 @@ if (!paywall || !offering) return null; // both are nullable; guard first
   `fontFamilyMap` maps design fonts to registered faces, `onDiagnostic`
   receives render fallbacks when no `client` is passed.
 - Unreleased (on `main`, not in 1.3.0): `Revnix.setLocale(tag)` (also
-  exported from `revnix-react/ui`) forces every designed paywall mounted
+  exported from `react-native-revnix/ui`) forces every designed paywall mounted
   after the call into `tag`'s language; `Revnix.setLocale()` clears it. A
   `locale` prop still wins for that one view. The links block's Restore,
   Terms and Privacy labels follow the paywall's language.

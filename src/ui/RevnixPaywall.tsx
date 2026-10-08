@@ -12,7 +12,7 @@
 // An unrecognized template (config published by a newer dashboard) falls
 // back to the classic structure instead of rendering nothing.
 //
-// Import from "revnix-react/ui" — the core entrypoint stays free of
+// Import from "react-native-revnix/ui" — the core entrypoint stays free of
 // react / react-native so non-RN consumers are unaffected.
 
 import * as React from "react";

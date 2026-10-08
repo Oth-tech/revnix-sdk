@@ -1922,7 +1922,7 @@ export class RevnixClient {
           Authorization: `Bearer ${this.apiKey}`,
           // L3: identify the SDK on EVERY request (reads included) so the
           // backend can triage by version without depending on body fields.
-          "X-Revnix-SDK": `revnix-react/${SDK_VERSION}`,
+          "X-Revnix-SDK": `react-native-revnix/${SDK_VERSION}`,
           ...(reportedBgFailures > 0
             ? { "X-Revnix-Bg-Failures": String(reportedBgFailures) }
             : {}),

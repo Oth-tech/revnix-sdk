@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- Package renamed to `react-native-revnix`; `revnix-react` is no longer
+  published. Install `react-native-revnix` and change imports to
+  `react-native-revnix` / `react-native-revnix/ui`.
+
 ## 1.4.0 (2026-10-06)
 
 ### Added
