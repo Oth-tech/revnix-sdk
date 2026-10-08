@@ -7,6 +7,10 @@
     "type": "git",
     "url": "git+https://github.com/Oth-tech/revnix-sdk.git"
   },
+  "homepage": "https://www.revnix.io/docs/react-native",
+  "bugs": {
+    "email": "support@revnix.io"
+  },
   "keywords": [
     "revnix",
     "react-native",
@@ -24,7 +28,11 @@
   "main": "dist/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/index.d.ts",
-  "sideEffects": false,
+  "sideEffects": [
+    "./store.js",
+    "./dist/store/index.js",
+    "./dist/esm/store/index.js"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -36,6 +44,11 @@
       "import": "./dist/esm/ui/index.js",
       "require": "./ui.js"
     },
+    "./store": {
+      "types": "./store.d.ts",
+      "import": "./dist/esm/store/index.js",
+      "require": "./store.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -43,6 +56,11 @@
     "src",
     "ui.js",
     "ui.d.ts",
+    "store.js",
+    "store.d.ts",
+    "ios",
+    "android",
+    "react-native-revnix.podspec",
     "!src/**/*.test.ts"
   ],
   "scripts": {

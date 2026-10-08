@@ -34,8 +34,11 @@ import type {
   PaywallConfig,
   PaywallInteraction,
   PaywallPurchaseOutcome,
+  RegisterPurchaseResult,
 } from "../types.js";
 import { PREVIEW_PLACEMENT_KEY } from "../implicit.js";
+import { getStoreAdapter } from "../store.js";
+import type { RevnixClient } from "../client.js";
 import type { PaywallBlockDoc } from "../blocks/types.js";
 import type { FontFamilyMap } from "../blocks/style.js";
 import { withAlpha } from "../blocks/color.js";
@@ -142,8 +145,11 @@ export interface RevnixPaywallProps {
    *  `paywall.purchase_failed`, and a promise that REJECTS is reported as a
    *  failure carrying the error's message. Returning nothing keeps today's
    *  behavior exactly — the start is reported, the outcome is not, and you
-   *  can still report it yourself with `client.logPaywallEvent`. */
-  onPurchase: (
+   *  can still report it yourself with `client.logPaywallEvent`.
+   *
+   *  Omit it to let the paywall buy through `client.purchase()`, which needs
+   *  `import "react-native-revnix/store"`. */
+  onPurchase?: (
     packageId: string
   ) => void | PaywallPurchaseOutcome | Promise<PaywallPurchaseOutcome | void>;
   /** Controlled selection; omit to let the paywall manage it (initial
@@ -152,7 +158,10 @@ export interface RevnixPaywallProps {
   onSelectPackage?: (packageId: string) => void;
   /** Renders a spinner in the CTA and disables purchasing. */
   loading?: boolean;
+  /** Omit it to restore through `client.restore()`. */
   onRestore?: () => void;
+  /** Fires when the paywall's own purchase (no `onPurchase`) succeeds. */
+  onPurchaseCompleted?: (result: RegisterPurchaseResult) => void;
   onTerms?: () => void;
   onPrivacy?: () => void;
   /** Called when the customer dismisses the paywall (REV-252) — either by
@@ -201,6 +210,9 @@ export interface RevnixPaywallProps {
         eventId?: string;
       }
     ) => void;
+    /** Used when `onPurchase` / `onRestore` are omitted. */
+    purchase?: RevnixClient["purchase"];
+    restore?: RevnixClient["restore"];
   };
   /** Placement/paywall attribution attached to the view report. */
   placementKey?: string;
@@ -338,7 +350,7 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
     [onSelectPackage, report, productOf]
   );
 
-  const { onPurchase } = props;
+  const { onPurchase, onPurchaseCompleted } = props;
   // Rises per attempt so a retry after a failure is its own occurrence rather
   // than being absorbed as a duplicate of the first try.
   const attemptRef = React.useRef(0);
@@ -368,9 +380,26 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
           }
         );
       };
-      let returned: ReturnType<RevnixPaywallProps["onPurchase"]>;
+      const purchase =
+        onPurchase ??
+        (async (): Promise<PaywallPurchaseOutcome> => {
+          if (!productId) {
+            return { status: "failed", message: "package has no productId" };
+          }
+          if (!client?.purchase) {
+            return { status: "failed", message: "pass client or onPurchase" };
+          }
+          const result = await client.purchase(productId, {
+            viewId: viewIdRef.current,
+            placementKey,
+            paywallId,
+          });
+          if (result) onPurchaseCompleted?.(result);
+          return { status: result ? "completed" : "cancelled" };
+        });
+      let returned: ReturnType<typeof purchase>;
       try {
-        returned = onPurchase(packageId);
+        returned = purchase(packageId);
       } catch (err) {
         // A host that throws synchronously has failed the purchase as surely
         // as one whose promise rejects.
@@ -386,20 +415,26 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
       }
       settle(returned as PaywallPurchaseOutcome | void);
     },
-    [onPurchase, report, productOf, placementKey]
+    [onPurchase, onPurchaseCompleted, report, productOf, placementKey, paywallId, client]
   );
 
   const { onRestore } = props;
-  const handleRestore = React.useMemo(
-    () =>
-      onRestore
-        ? () => {
-            report("restore");
-            onRestore();
-          }
-        : undefined,
-    [onRestore, report]
-  );
+  const handleRestore = React.useMemo(() => {
+    if (onRestore) {
+      return () => {
+        report("restore");
+        onRestore();
+      };
+    }
+    const restore = client?.restore?.bind(client);
+    if (!restore || !getStoreAdapter()) return undefined;
+    return () => {
+      report("restore");
+      void restore().catch((err) =>
+        client?.reportRenderDiagnostic?.(String(err?.message ?? err))
+      );
+    };
+  }, [onRestore, report, client]);
 
   // The host's dismissal runs whatever happens to the beacon — an analytics
   // failure must never trap the customer on the screen (REV-252).
@@ -532,7 +567,9 @@ function ClassicClose({
 
 /** The nine `template` layouts — every paywall published before the block
  *  builder, and the fallback for any config that carries no block tree. */
-function ClassicPaywall(props: RevnixPaywallProps) {
+function ClassicPaywall(
+  props: RevnixPaywallProps & { onPurchase: (packageId: string) => void }
+) {
   const { config, packages, loading } = props;
   // Base scheme comes from the dashboard config (mode: dark|light, absent =
   // dark for legacy configs); the host app's explicit theme prop wins on top.

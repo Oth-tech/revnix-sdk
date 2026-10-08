@@ -21,6 +21,11 @@ import {
 } from "./device.js";
 import { SDK_VERSION } from "./version.js";
 import {
+  getStoreAdapter,
+  type StoreAdapter,
+  type StoreTransaction,
+} from "./store.js";
+import {
   browserLifecycle,
   DEFAULT_SESSION_TIMEOUT_MS,
   IMPLICIT_CONFIG_RETRY_MS,
@@ -185,6 +190,7 @@ export class RevnixClient {
   private implicitConfigPromise: Promise<ReadonlySet<string>> | null = null;
   private implicitConfigRetryAt = 0;
   private lifecycleUnsubscribe: (() => void) | null = null;
+  private stopStoreObserver: (() => void) | null = null;
   /** The cold-start batch while it runs, resolving to whether it presented a
    *  paywall. A deep link delivered on the first frame — SwiftUI's onOpenURL,
    *  RN's getInitialURL — must wait for it, or the customer gets the launch
@@ -253,6 +259,14 @@ export class RevnixClient {
     void this.retryPendingPurchases().catch((err) =>
       this.diag("retryPendingPurchases", err)
     );
+    const store = getStoreAdapter();
+    if (store) {
+      this.stopStoreObserver = store.observe((tx) =>
+        void this.registerStoreTransaction(store, tx).catch((err) =>
+          this.diag("storeObserver", err)
+        )
+      );
+    }
     // REV-157: warm the placement cache at launch, so the first paywall of the
     // session can render offline. Fire-and-forget; a failed key just stays on
     // whatever an earlier launch cached.
@@ -421,6 +435,77 @@ export class RevnixClient {
       if (worthQueueing(err)) {
         await this.enqueuePurchase(customerId, input);
       }
+      throw err;
+    }
+  }
+
+  /** Buys `productId` through the native store (StoreKit 2 / Play Billing),
+   *  registers it with Revnix, then finishes the store transaction. Resolves
+   *  null when the customer cancelled or the purchase is pending approval.
+   *  Needs `import "react-native-revnix/store"` before configure(). A refused
+   *  claim (PurchaseBlockedError) is never finished, so Google refunds it. */
+  async purchase(
+    productId: string,
+    opts?: Pick<RegisterPurchaseInput, "viewId" | "paywallId" | "placementKey">
+  ): Promise<RegisterPurchaseResult | null> {
+    const store = this.requireStore();
+    const customerId = await this.customerIdPromise;
+    const tx = await store.purchase(productId, { customerId });
+    if (!tx) return null;
+    return this.registerStoreTransaction(store, tx, opts);
+  }
+
+  /** Re-registers every purchase the store still holds for this device and
+   *  resolves how many registered. Per-purchase failures go to onDiagnostic. */
+  async restore(): Promise<number> {
+    const store = this.requireStore();
+    let restored = 0;
+    for (const tx of await store.restore()) {
+      try {
+        await this.registerStoreTransaction(store, tx, undefined, tx.store === "google");
+        restored += 1;
+      } catch (err) {
+        this.diag("storeRestore", err);
+      }
+    }
+    return restored;
+  }
+
+  private requireStore(): StoreAdapter {
+    const store = getStoreAdapter();
+    if (!store) {
+      throw new Error(
+        'Revnix: native purchases need `import "react-native-revnix/store"` before Revnix.configure(...) and a rebuilt app (pod install / Expo development build)'
+      );
+    }
+    return store;
+  }
+
+  private async registerStoreTransaction(
+    store: StoreAdapter,
+    tx: StoreTransaction,
+    opts?: Pick<RegisterPurchaseInput, "viewId" | "paywallId" | "placementKey">,
+    finish = true
+  ): Promise<RegisterPurchaseResult> {
+    const finishTx = () =>
+      finish
+        ? store.finish(tx.transactionId).catch((err) => this.diag("storeFinish", err))
+        : undefined;
+    try {
+      const result = await this.registerPurchase({
+        source: tx.store,
+        token: tx.token,
+        productId: tx.productId,
+        transactionId: tx.transactionId,
+        occurredAt: tx.occurredAt,
+        expiresAt: tx.expiresAt,
+        signedTransactionInfo: tx.signedTransactionInfo,
+        ...opts,
+      });
+      await finishTx();
+      return result;
+    } catch (err) {
+      if (!(err instanceof PurchaseBlockedError)) await finishTx();
       throw err;
     }
   }
@@ -1532,6 +1617,8 @@ export class RevnixClient {
     // every return alongside its successor.
     this.lifecycleUnsubscribe?.();
     this.lifecycleUnsubscribe = null;
+    this.stopStoreObserver?.();
+    this.stopStoreObserver = null;
   }
 
   /** A block paywall reporting a paint string it could not read. Routed to the

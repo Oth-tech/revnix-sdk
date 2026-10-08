@@ -12,6 +12,11 @@ export {
   RevnixTimeoutError,
 } from "./errors.js";
 export { purchaseInputFromIap, type IapPurchase } from "./iap.js";
+export {
+  setStoreAdapter,
+  type StoreAdapter,
+  type StoreTransaction,
+} from "./store.js";
 export { memoryStorage, generateAnonymousId } from "./storage.js";
 export { SDK_VERSION } from "./version.js";
 export { DEVICE_HEADER, encodeDeviceHeader } from "./device.js";
