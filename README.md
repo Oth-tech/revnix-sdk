@@ -1,766 +1,191 @@
-# react-native-revnix
+<p align="center">
+  <a href="https://www.revnix.io"><img src="https://www.revnix.io/sdk/logo.png" width="360" alt="Revnix"></a>
+</p>
 
-Revnix SDK for React Native / JavaScript. Pure TypeScript over the Revnix
-`/v1` REST API, no native modules, no dependencies. Pairs with
-`react-native-iap` (or any StoreKit 2 / Play Billing wrapper) for purchases.
-Ships CJS + ESM (tree-shakeable); every request carries an
-`X-Revnix-SDK: react-native-revnix/<version>` header (`SDK_VERSION` is exported).
+<h1 align="center">Subscriptions, Paywalls and Attribution<br>for Your React Native App</h1>
 
-## Install
+<p align="center">
+  <a href="https://www.npmjs.com/package/react-native-revnix"><img src="https://img.shields.io/npm/v/react-native-revnix?color=2f6fe0&logo=npm" alt="npm version"></a>
+  <a href="https://github.com/Oth-tech/revnix-sdk/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/react-native-revnix?color=2f6fe0" alt="license"></a>
+  <img src="https://img.shields.io/badge/TypeScript-ready-2f6fe0?logo=typescript&logoColor=white" alt="TypeScript">
+</p>
+
+<p align="center">
+  <a href="https://www.revnix.io"><b>Website</b></a> •
+  <a href="https://www.revnix.io/docs/react-native"><b>Docs</b></a> •
+  <a href="https://www.revnix.io/docs/react-native/reference"><b>API Reference</b></a>
+</p>
+
+![Revnix: subscriptions, paywalls and attribution for mobile apps](https://www.revnix.io/sdk/hero.png)
+
+Revnix SDK makes in-app subscriptions, paywalls and attribution for React Native fast and easy. One package buys through StoreKit 2 and Google Play Billing, validates the receipt on the server and unlocks the entitlement. Zero npm dependencies.
+
+## Table of Contents
+
+- [Why Revnix?](#why-revnix)
+- [Getting Started](#getting-started)
+- [Quick start](#quick-start)
+- [Purchases and entitlements without server code](#purchases-and-entitlements-without-server-code)
+- [Paywalls that update without app releases](#paywalls-that-update-without-app-releases)
+- [A/B tests with a built-in holdout](#ab-tests-with-a-built-in-holdout)
+- [Attribution and deep links](#attribution-and-deep-links)
+- [Real-time analytics for your React Native app](#real-time-analytics-for-your-react-native-app)
+- [Compatibility](#compatibility)
+- [Documentation](#documentation)
+- [Migrating from another SDK](#migrating-from-another-sdk)
+- [Support](#support)
+- [License](#license)
+
+## Why Revnix?
+
+- [Purchases in one call](https://www.revnix.io/docs/react-native/make-purchases). `purchase()` opens the App Store or Google Play sheet, validates the receipt on the server and grants the entitlement. No react-native-iap, no server code.
+- [Entitlements that work offline](https://www.revnix.io/docs/react-native/check-entitlements). Entitlement checks are cached on device, so a user who paid stays unlocked without a network.
+- [Remote paywalls](https://www.revnix.io/docs/paywall-builder). Design paywalls in the dashboard, pick from 250 templates and ship copy, prices and layout changes without an app release.
+- [A/B tests and holdouts](https://www.revnix.io/docs/ab-tests). Split a placement between variants, measure revenue per user with credible intervals and ship the winner from the dashboard.
+- [Attribution and deep links](https://www.revnix.io/docs/attribution). Install attribution, deferred deep links, Apple Search Ads, Google Ads and MMP forwarding, all from the same SDK.
+- [Integrations](https://www.revnix.io/docs/integrations). Send subscription events to analytics, attribution and messaging tools, or to your own server through signed webhooks.
+- [Real-time analytics](https://www.revnix.io/docs/analytics). Revenue, MRR, LTV, ROAS, cohorts and funnels for iOS and Android, filtered by store, product, channel and campaign.
+
+## Getting Started
+
+### For React Native projects
 
 ```sh
+# using npm
 npm install react-native-revnix
+
+# or using yarn
+yarn add react-native-revnix
 ```
 
-## Setup
+Then `cd ios && pod install`. Android links through Gradle automatically.
+
+### For Expo projects
+
+```sh
+npx expo install react-native-revnix
+npx expo prebuild
+```
+
+The store module is native code, so Expo needs a development build rather than Expo Go.
+
+Read the [installation guide](https://www.revnix.io/docs/react-native/installation) and [configuration reference](https://www.revnix.io/docs/react-native/configuration) to set up the SDK.
+
+## Quick start
 
 ```ts
+import "react-native-revnix/store";
 import { Revnix } from "react-native-revnix";
 import { MMKV } from "react-native-mmkv";
 
 const mmkv = new MMKV();
 
+// 1. Configure once at app start
 Revnix.configure({
-  apiKey: "rvx_pk_test_…",                     // dashboard → Settings → API keys
-  baseUrl: "https://<deployment>.convex.site", // Convex site URL
+  apiKey: "rvx_pk_live_…",
+  baseUrl: "https://<your-deployment>.convex.site",
   storage: {
     getItem: (k) => mmkv.getString(k) ?? null,
     setItem: (k, v) => mmkv.set(k, v),
   },
 });
-```
 
-`Revnix.configure()` returns the `RevnixClient`; afterwards `Revnix.client`
-is available anywhere (it throws if used before `configure`). Re-running
-`configure()` disposes the previous client first (stopping its retry drain,
-read-your-writes polls, implicit triggers and foreground listener, safe under
-dev fast-refresh). You
-can also construct `new RevnixClient(config)` directly; call `dispose()` when
-you discard one.
+// 2. Buy: opens the store sheet, validates the receipt, grants the entitlement
+await Revnix.client.purchase("pro.monthly");
 
-### API keys
-
-The dashboard issues two kinds of key, and the key fixes the app **and**
-environment server-side; a test key can never write into production:
-
-- **Publishable** `rvx_pk_live_…` / `rvx_pk_test_…`: safe to embed in the
-  app. Can read entitlements, register its own purchases, report installs and
-  paywall views/closes, and set non-reserved attributes.
-- **Secret** `rvx_sk_live_…` / `rvx_sk_test_…`: server-side only, never in
-  an app binary. Additionally allowed to call `identify()`, `alias()` and
-  `getIdentity()` (the identity graph is server-only), plus the server-only
-  grants/attributes endpoints.
-
-Calling a secret-gated method with a publishable key fails with
-`RevnixAuthError` (403). Legacy `rvx_live_…`/`rvx_test_…` keys still work and
-have full access.
-
-### Config options
-
-| Option | Default | What it does |
-|---|---|---|
-| `apiKey` (required) | n/a | Sent as `Authorization: Bearer <key>` |
-| `baseUrl` (required) | n/a | Deployment site URL; trailing slashes stripped. Must be `https://`, `http://` is allowed only for localhost/private-network dev hosts (`localhost`, `127.*`, `10.*`, `192.168.*`, `172.16-31.*`, `[::1]`) |
-| `storage` | auto | Persistent adapter; see below |
-| `customerId` | n/a | Start as this customer instead of loading/generating an anonymous id |
-| `requestTimeoutMs` | `10000` | Per-request timeout; slow/dead backend fails fast with `RevnixTimeoutError` |
-| `readYourWritesDelaysMs` | `[250, 500, 1000, 2000]` | Post-purchase entitlement re-fetch schedule; `[]` disables |
-| `entitlementsTtlMs` | `30000` | In-memory soft TTL on `getEntitlements()`/`isEntitled()`: a server read younger than this answers repeat calls from memory. `0` restores always-fetch |
-| `offlineMaxCacheAgeMs` | 14 days | Max age of a cache-served entitlements snapshot; older snapshots serve every entitlement as `isActive: false` |
-| `reportInstalls` | `true` | `POST /v1/installs` on first launch (forced off on non-persistent storage) |
-| `installMetadata` | n/a | `{ platform?, appVersion? }` attached to the install report (superseded by `device`) |
-| `device` | detected | `{ platform?, osVersion?, appVersion?, locale?, currency?, storefront?, model?, sandbox? }` sent with every placement resolve as `X-Revnix-Device`, evaluated by targeting rules on that request and stored as `device.*` attributes. Browser detects platform/OS/locale; React Native apps pass what `react-native-device-info` gives them. `false` disables |
-| `prefetchPlacements` | n/a | Placement keys resolved-and-cached at construction (fire-and-forget), so the session's first paywall renders even offline |
-| `onDiagnostic` | n/a | Callback invoked on every swallowed background failure (retry drains, prefetches, install/paywall reports, storage errors); see Diagnostics |
-| `fetch` | global fetch | Custom fetch (tests, polyfills) |
-| `onImplicitPaywall` | n/a | Handler for implicit placement moments (`app_launch`, `session_start`, etc.), configured in the dashboard |
-| `implicitPlacements` | whether `onImplicitPaywall` is set | Explicit off switch for implicit placements, even when `onImplicitPaywall` is set |
-| `onDeferredDeepLink` | n/a | Delivers the link the customer clicked before install, at most once. Since 1.2.2 |
-| `onAttribution` | n/a | Fires after the first-launch install report and whenever the install-attribution verdict changes. Turns on the background fetch for it (since 1.2.4) |
-| `lifecycle` | `visibilitychange` listener in a browser, nothing under React Native | How the SDK learns the app came to the foreground; `false` disables foreground detection |
-| `sessionTimeoutMs` | `1800000` (30 minutes) | How long the app must be backgrounded before the return counts as a new session |
-
-`getDeviceHeader()` returns the encoded `X-Revnix-Device` value this client
-sends, or `null` when `device: false`.
-
-**Storage:** pass a persistent `storage` adapter (MMKV/AsyncStorage on React
-Native). On the web, omitting it automatically falls back to `localStorage`.
-If neither is available the SDK runs memory-only: it still works, but it
-warns loudly and **disables install reporting**; otherwise every launch
-would look like a new anonymous customer and inflate your install metrics
-(prior purchases would also not be attached across launches). A storage
-adapter that *throws* never breaks the client either: reads/writes are
-guarded, the failure is reported via `onDiagnostic`, and the customer id
-survives in memory for the session. `memoryStorage()` is exported for tests.
-
-Anonymous ids (`rvx_anon_…`) are minted with `crypto.getRandomValues`; there
-is deliberately no `Math.random` fallback. On runtimes without WebCrypto,
-polyfill `globalThis.crypto` or pass an explicit `customerId`.
-
-## Identity
-
-```ts
-// on-device (publishable key):
-await Revnix.client.getCustomerId();   // rvx_anon_… until identified
-await Revnix.client.logout();           // fresh anonymous customer
-
-// server-side only (secret rvx_sk_ key, throws locally on a publishable key):
-import { RevnixClient } from "react-native-revnix";
-
-const revnix = new RevnixClient({
-  apiKey: process.env.REVNIX_SECRET_KEY!,      // rvx_sk_…
-  baseUrl: "https://<deployment>.convex.site",
-  customerId: deviceCustomerId,                // what the device sent from getCustomerId()
-  reportInstalls: false,
-});
-await revnix.identify(user.uid);        // on login, merges anonymous history
-```
-
-Pass the device's id in as `customerId`: without it the server-side client
-generates its own anonymous id and merges that instead, so the device's
-history is never merged. Build one client per request.
-
-- `identify(userId, { strategy })`: `"merge"` (default) folds the anonymous
-  history into the identified customer; `"block"` refuses when both ids
-  already have history. No-op (no network call) when already identified as
-  that id. **Requires a secret or legacy key**, on a publishable key the SDK
-  throws `RevnixAuthError` locally, before any network call; run it from your
-  backend instead and let the device pick up the canonical id on its next
-  `registerPurchase()` (its response always carries the caller's canonical id).
-- `alias(aliasId)`: attach an alternate id to the current customer (the
-  alias must be a fresh id; use `identify()` to merge existing customers).
-  Also secret-gated.
-- `getIdentity()`: resolves the current id's identity cluster:
-  `{ canonicalId, isAlias, anonymous, linkedIds }`. **Also secret-gated**:
-  the response is an identity graph, so the server refuses publishable keys
-  and the SDK throws `RevnixAuthError` locally on one, before any network call.
-- `logout()`: generates a fresh anonymous customer locally (never merges,
-  never re-reports an install).
-
-## Purchases
-
-Set `appAccountToken` (iOS) / `obfuscatedAccountIdAndroid` to the Revnix
-customer id when requesting the purchase, then register it:
-
-```ts
-import { purchaseInputFromIap, PurchaseBlockedError } from "react-native-revnix";
-
-// in your purchaseUpdatedListener, before finishTransaction:
-try {
-  await Revnix.client.registerPurchase(
-    purchaseInputFromIap(purchase, Platform.OS === "ios" ? "apple" : "google")
-  );
-} catch (err) {
-  if (err instanceof PurchaseBlockedError) {
-    // token belongs to another account and the app forbids transfer
-  }
-  throw err;
-}
-```
-
-Registration and the store's own webhook share an idempotency key; whichever
-arrives first wins, the other becomes a no-op. On Apple, `purchaseInputFromIap`
-extracts the StoreKit 2 JWS from `jwsRepresentation` (or `purchaseToken`,
-shape-checked), prefers the JWS payload's own `originalTransactionId` as the
-token, and sends the JWS as `signedTransactionInfo` automatically, so
-purchases registered through the helper arrive *proven*, not provisional,
-with no extra work. Google purchases map to
-`token = transactionId = purchaseToken` (deliberately: it matches the
-webhook's purchase key, not the Play `orderId`).
-
-**Offline resilience:** if registration fails for a *transient* reason
-(network, timeout, 429, 5xx) the purchase is persisted to a retry queue and
-the error is rethrown; the queue drains automatically on the next app launch
-(or call `retryPendingPurchases()` yourself). Permanent rejections, 400 bad
-input, 401/403 auth, and `PurchaseBlockedError` (409), are never queued, and
-one that slipped into the queue earlier is drained on the next retry pass.
-Repeated failures of the same purchase collapse to one queue entry.
-
-**Read-your-writes:** after a successful `registerPurchase` the SDK re-fetches
-entitlements until the response's ledger cursor covers the purchase, so
-`getEntitlements()` / `isEntitled()` right after buying normally include the
-purchase, and the offline cache is warm at exactly the moment it
-matters. Tune or disable via `readYourWritesDelaysMs` (pass `[]` to disable).
-Each delay gets ±20% jitter, a 429's `Retry-After` is honored as extra sleep,
-and every poll bypasses the entitlements soft TTL so it always reads the
-server. The poll is skipped when the token turned out to belong to another
-customer, and it resolves with the last read when the schedule runs out, it
-never throws from the schedule itself. For out-of-band grants (e.g. your
-server granted an entitlement and returned its `seq`),
-`waitForEntitlements(seq)` runs the same poll on demand.
-
-`customerId` in the result is **the id this caller should use going forward**, its own canonical id. It differs from the one you sent only when identity
-resolution merged that id away (a restore after login), so the SDK follows it
-and persists it.
-
-When the token belongs to someone else, that is reported separately and the
-SDK stays where it is: `ownedByOtherCustomer: true`, plus `tokenOwner` naming
-the holder for secret-key callers only, a publishable key learns the outcome
-but never another customer's id. `transferred: true` means the token was
-reassigned *to you*.
-
-**Store proof, send `signedTransactionInfo`.** A publishable key ships inside
-your app binary, so "this device bought pro.monthly" is an assertion until a
-store backs it. Pass StoreKit 2's
-`VerificationResult.jwsRepresentation` as `signedTransactionInfo` and the
-purchase is proven: Revnix verifies it against Apple's certificate chain and
-checks that it names this exact transaction.
-
-```ts
-await Revnix.client.registerPurchase({
-  source: "apple",
-  token: transaction.originalID,
-  transactionId: transaction.id,
-  productId: transaction.productID,
-  expiresAt: transaction.expirationDate,
-  signedTransactionInfo: verificationResult.jwsRepresentation, // ← proof
-});
-```
-
-Without proof the purchase is still accepted, but the result carries
-`provisional: true`: the entitlement is granted for a short window rather than
-the full period, and no revenue is recorded, until Apple's or Google's own
-notification for the charge confirms it, which normally happens within
-seconds and promotes the purchase automatically. On Google there is no
-client-side receipt; if you have connected Play credentials, Revnix verifies
-the purchase token directly with Play instead, and a token Play rejects is
-refused with `403`. Once your installed base sends proof, an app can require
-it outright (`projects.setRequirePurchaseProof`), after which unproven
-registrations get `403` rather than a provisional grant.
-
-**Transfer trust (server-side):** the backend only honors a transfer (or an
-imported-history merge) for a claim it can verify: a secret `rvx_sk_…` key,
-or that same `signedTransactionInfo`. A publishable-key registration without
-proof still binds a *free* token, but a token bound to another customer stays
-put and the response carries `refused: "unverified-claim"`, with your own
-customer id untouched, so a refused claim never moves the device onto the
-rightful owner's identity.
-
-## Entitlements & placements
-
-```ts
-const { entitlements, cursor } = await Revnix.client.getEntitlements();
+// 3. Check access anywhere
 const pro = await Revnix.client.isEntitled("pro");
-const { offering, paywall } = await Revnix.client.resolvePlacement("paywall_main");
 ```
 
-`getEntitlements()` is network-first with an **offline cache**: on success the
-response is cached (per customer id, snapshots for up to 4 customers are
-kept, oldest evicted, so an offline launch right after `identify()`/`logout()`
-still has a gate) and returned with `stale: false`. On a *transient* failure
-(offline, timeout, 429, 5xx) the last cached snapshot is returned with
-`stale: true` and its original `fetchedAt`; a deliberate server rejection
-(401/403/404/409, e.g. a revoked key) is **always rethrown, cache or not**,
-so the cache never defeats a kill switch. It only throws on transient
-failures when there is nothing cached. `isEntitled()` goes through the same
-path, so entitlement gates keep working offline. `getCachedEntitlements()`
-reads the cache without touching the network (returns `null` when empty), useful for instant startup gating.
+Your API key and deployment URL are in the dashboard under Settings. See [API keys](https://www.revnix.io/docs/api-keys).
 
-**Soft TTL & coalescing:** a server read younger than `entitlementsTtlMs`
-(default 30 s) answers repeat `getEntitlements()`/`isEntitled()` calls from
-memory with no request, and concurrent calls share one in-flight request; so a screen full of entitlement gates costs one fetch. Set
-`entitlementsTtlMs: 0` to always hit the network; `waitForEntitlements()`
-and the post-purchase poll always bypass the TTL. Practical consequence:
-out-of-band entitlement changes (a webhook-driven grant or revoke) become
-visible within ~30 s, not instantly.
+## Purchases and entitlements without server code
 
-**Local expiry grace:** cache-served entitlements are re-evaluated against the
-device clock, an entitlement whose `expiresAt` passed more than **3 days**
-ago is served as `isActive: false`, so a long-lapsed subscription never stays
-active offline forever. Within those 3 days it stays active (the auto-renewal
-an offline device cannot see yet). Independently of per-entitlement expiry, a
-cached snapshot older than `offlineMaxCacheAgeMs` (default **14 days**), or
-one that appears to be from the *future* because the device clock rolled back
-more than 5 minutes, is served with every entitlement inactive, so even a
-lifetime grant cannot be farmed by keeping a device offline forever. Fresh
-server reads are authoritative and never re-evaluated.
+**Revnix handles the hard parts of subscriptions in a small, developer-friendly SDK.**
 
-`resolvePlacement(placementKey)` resolves the latest *published* catalog
-revision. Both `offering` and `paywall` are nullable; guard before rendering
-(a placement can exist with nothing attached, and an unpublished environment
-is an error).
+- `purchase(productId)` runs the whole flow: store sheet, server-side receipt validation, entitlement, transaction finish. `restore()` brings purchases back on a new device.
+- Renewals, purchases on other devices and Ask to Buy approvals arrive on their own and are registered automatically.
+- Entitlements and placements are cached on device, so paid users stay unlocked offline.
+- Failed registrations are retried automatically when the app comes back online.
+- Identify users across devices with `identify()`; purchases follow the customer, not the install. See [Identify users](https://www.revnix.io/docs/react-native/identify-users).
+- Typed errors for blocked purchases and account transfers. See [Errors and transfers](https://www.revnix.io/docs/react-native/errors-and-transfers).
+- Already using `react-native-iap` or another store library? Keep it and call `registerPurchase()` instead. See [Make purchases](https://www.revnix.io/docs/react-native/make-purchases).
 
-**Placements are offline-safe too:** each successful `resolvePlacement` caches
-its resolution (per placement key); when the live read fails *transiently*
-the cached copy is returned with `stale: true`, so the paywall renders the
-last published version rather than not at all; it only throws when nothing
-is cached. Deliberate answers pass through the cache: a deleted placement
-(404) or an unpublished environment (409) still throws, so a pulled paywall
-stays pulled.
-`getCachedPlacement(placementKey)` reads that cache with no network call, and
-`prefetchPlacements` (config) warms it at app start.
+## Paywalls that update without app releases
 
-## Implicit placements
+![Revnix paywall builder: element tree, background library and a live iPhone preview](https://www.revnix.io/sdk/react-native/paywalls.png)
 
-Six placements resolve without a `resolvePlacement` call: `app_install`,
-`app_launch`, `session_start`, `deeplink_open`, `paywall_decline` and
-`transaction_abandon` are moments the SDK recognises itself, so an operator
-can attach a paywall to any of them from the dashboard with no release. Five
-need no app code; `deeplink_open` needs the `handleDeepLink` call shown
-below on native (the web SDK reports the landing URL itself since 1.2.4, see
-below). **Off by default**: passing
-`onImplicitPaywall` is what turns
-them on; without it the SDK makes no extra requests for the other five
-moments, though `handleDeepLink` always sends its one report regardless.
-With `onImplicitPaywall` set, the SDK asks `GET /v1/config` once at
-construction and fires for the moments the dashboard has configured plus
-`session_start`, which the server always lists so every app records
-`session.started`; an app that configured nothing costs one cached
-`/v1/config` response per launch and one `session_start` trigger per
-session.
+With the [Revnix paywall builder](https://www.revnix.io/docs/paywall-builder) you design the paywall in the dashboard and render it natively in your app.
 
-```ts
-Revnix.configure({
-  apiKey, baseUrl, storage,
-  onImplicitPaywall: ({ placement, resolution }) => present(resolution),
-  // session_start needs foreground detection. A browser is handled for you
-  // (visibilitychange); React Native passes an adapter over AppState.
-  lifecycle: {
-    onStateChange: (handler) => {
-      const sub = AppState.addEventListener("change", (s) =>
-        handler(s === "active" ? "foreground" : "background"));
-      return () => sub.remove();
-    },
-  },
-});
+- **Native rendering**: `RevnixPaywall` from `react-native-revnix/ui` draws the paywall with React Native views, no web views, and buys the selected package itself.
+- **250 templates**: pick a layout, theme and accent, then edit copy, packages and badges.
+- **Update without redeploying**: change prices, copy or layout any time; the next placement resolve picks it up.
+- **Localized**: 43 languages for the built-in strings, plus per-locale copy of your own.
 
-// deeplink_open is the one moment the SDK cannot see itself: the URL
-// reaches your router.
-Linking.getInitialURL().then((url) => url && Revnix.client.handleDeepLink(url));
-Linking.addEventListener("url", ({ url }) => Revnix.client.handleDeepLink(url));
-```
+Learn more in [Show paywalls](https://www.revnix.io/docs/react-native/show-paywalls) and [Placements](https://www.revnix.io/docs/placements).
 
-`getInitialURL()` is the cold start (the link that launched a closed app);
-the `url` event is a link arriving while the app is already running. Run
-both once, at module scope, not inside a component effect that can remount
-(StrictMode runs effects twice in development). A full JS reload (dev
-reload, an OTA update) makes `getInitialURL()` return the same URL again,
-and `handleDeepLink` would report that open twice.
+## A/B tests with a built-in holdout
 
-On the web (`document` present) the SDK does this step itself (since 1.2.4;
-on 1.2.3 call `handleDeepLink(window.location.href)` yourself): a landing
-URL whose query
-carries `utm_*` or `revnix_link` is reported once at construction, no host
-code needed. Call `handleDeepLink` yourself only for client-side navigations
-or for URLs without those params. A call with the
-same landing URL is skipped once so it doesn't double-report; anything
-after that reports normally.
+![Revnix A/B test results with a winner and credible intervals](https://www.revnix.io/sdk/react-native/ab-test.png)
 
-`handleDeepLink` also recognises the dashboard's QR/link preview
-(`…?revnix_preview=<token>`) and routes it through the same
-`onImplicitPaywall` handler with `placement: "revnix_preview"`, no extra
-wiring needed. Purchases are disabled on that display: `RevnixPaywall`
-(classic or designed) shows an alert instead of calling `onPurchase`, and no
-paywall view/close/interaction is sent to analytics for it. A host rendering
-`RevnixBlockPaywall` directly, without `RevnixPaywall`, is not covered: it
-takes no `placementKey` and has no way to know the display is a preview.
+- Split a placement's traffic between offering and paywall variants. Conversions, trials, revenue per user and MRR are calculated per variant.
+- Add a **holdout** variant that shows no paywall at all, to measure what the paywall is really worth.
+- Bayesian results with 95% credible intervals and a sample-size planner, so you know when to stop.
+- Ship the winner from the dashboard; the SDK needs no change.
 
-The SDK never presents for you; it does not own your navigation stack. You
-get the same `PlacementResolution` as `resolvePlacement` returns. When you
-render it, **pass `resolution.placementKey` to `RevnixPaywall` /
-`logPaywallShown`**: that marks the display as implicit, which is the only
-thing that stops a `paywall_decline` paywall from firing `paywall_decline`
-again when dismissed. A cold start hands you at most one paywall (install →
-launch → session, first that resolves wins), and a deep link on the first
-frame waits for that decision. A close is a decline: never report one for a
-display that ended in a purchase. `sessionTimeoutMs` (default 30 min) is how
-long the app must be backgrounded for the return to count as a session.
+Learn more in [A/B tests](https://www.revnix.io/docs/ab-tests).
 
-## Deferred deep links
+## Attribution and deep links
 
-A click on a Revnix link (`https://<deployment>.convex.site/l/<token>`,
-created on the Links page) sends Android to Google Play with the link's query
-string as the install referrer, iOS to the App Store, and desktop to the
-link's fallback URL, and remembers every non-Android click for the link's
-click window (1 hour by default, set per link). `POST /v1/installs` (fired
-automatically on first launch) can come back with the link the install
-matched: exact on Android, from that install referrer; probabilistic on iOS,
-from a same-network click or impression within the link's window, so it can
-be wrong on a shared network. Only a link whose scheme
-matches your app's configured URL scheme is ever returned. Pass
-`onDeferredDeepLink` to get it, delivered at most once per install; route the
-URL yourself, optionally also through `handleDeepLink` for `deeplink_open`
-paywall rules:
+![Revnix MRR by country, last 90 days](https://www.revnix.io/sdk/react-native/attribution.png)
 
-```ts
-Revnix.configure({
-  apiKey, baseUrl, storage,
-  onDeferredDeepLink: (url, match) => router.push(url),
-});
-```
+- **Install attribution** from Revnix links, with per-link click lookback windows. See [Attribution](https://www.revnix.io/docs/attribution).
+- **Deferred deep links** resolve on first launch, so a user who installs from a campaign lands on the right screen. See [Deferred deep links](https://www.revnix.io/docs/deferred-deep-links).
+- **Apple Search Ads** and **Google Ads** attribution, with App Tracking Transparency support. See [Apple Search Ads](https://www.revnix.io/docs/apple-search-ads) and [Google Ads](https://www.revnix.io/docs/google-ads-attribution).
+- **MMP forwarding** to AppsFlyer and Adjust, **ad revenue** logging and **uninstall measurement**. See [MMP attribution](https://www.revnix.io/docs/mmp-attribution), [Ad revenue](https://www.revnix.io/docs/ad-revenue) and [Uninstall measurement](https://www.revnix.io/docs/uninstall-measurement).
+- **Fraud prevention**: anonymous-IP and click-injection checks keep paid channels honest. See [Fraud prevention](https://www.revnix.io/docs/fraud-prevention).
 
-On Android, the same link can also arrive later through the Play Install
-Referrer service; read it yourself and hand the raw string to
-`Revnix.client.handleInstallReferrer(referrer)`, which also feeds the
-`deferredDeepLink` response into the same `onDeferredDeepLink` handler.
+## Real-time analytics for your React Native app
 
-An email service provider (Mailchimp, SendGrid) rewrites links through its
-own click-tracking domain before your customer ever sees them; pass those
-through `resolveDeepLink` first, then to your router and `handleDeepLink`:
+![Revnix overview: active subscriptions, revenue and MRR over 90 days](https://www.revnix.io/sdk/react-native/analytics.png)
 
-```ts
-const url = await Revnix.client.resolveDeepLink(clickedUrl);
-router.push(url);
-Revnix.client.handleDeepLink(url);
-```
+- Revenue, MRR, ARR, ARPU, LTV and ROAS, updated from the ledger as purchases arrive.
+- Cohorts, retention, funnels and predicted LTV. See [Analytics](https://www.revnix.io/docs/analytics).
+- Filter and group by store, product, country, channel, campaign and A/B test variant.
+- Saved reports, alerts and a REST API for your own dashboards. See [Reports](https://www.revnix.io/docs/reports) and [REST API](https://www.revnix.io/docs/rest-api).
 
-A failure (bad input, network error) hands the URL back unchanged. The
-result can still be an http(s) URL if the chain could not be unwrapped, so
-check the scheme before routing on it.
+## Compatibility
 
-## Apple Search Ads attribution
+- **React Native** 0.72 or later, New Architecture and legacy architecture alike. iOS 15.1 or later (StoreKit 2), Android with Google Play Billing 8.
+- **Expo**: supported with a development build. Expo Go cannot load the store module.
+- **React and Next.js**: the same package powers web apps; the store module is mobile only, web registers purchases from your server. See [React](https://www.revnix.io/docs/react).
+- **Other platforms**: Revnix also ships SDKs for [iOS](https://www.revnix.io/docs/ios), [Android](https://www.revnix.io/docs/android), [Flutter](https://www.revnix.io/docs/flutter), [Capacitor](https://www.revnix.io/docs/capacitor) and [Unity](https://www.revnix.io/docs/unity).
+- Ships CommonJS and ESM builds, tree-shakeable, with full TypeScript types.
 
-iOS-only, and only for a host that mints its own token: `AAAttribution
-.attributionToken()` is an iOS framework call with no JavaScript binding, so
-this package cannot read it for you. Mint it in a native module and hand the
-raw string to `Revnix.client.handleAttributionToken(token)`, which reports it
-alongside the install and resolves to Apple's verdict:
+## Documentation
 
-```ts
-const verdict = await Revnix.client.handleAttributionToken(token);
-```
+- [Overview](https://www.revnix.io/docs/react-native)
+- [Installation](https://www.revnix.io/docs/react-native/installation)
+- [Configuration](https://www.revnix.io/docs/react-native/configuration)
+- [Identify users](https://www.revnix.io/docs/react-native/identify-users)
+- [Make purchases](https://www.revnix.io/docs/react-native/make-purchases)
+- [Check entitlements](https://www.revnix.io/docs/react-native/check-entitlements)
+- [Show paywalls](https://www.revnix.io/docs/react-native/show-paywalls)
+- [Errors and transfers](https://www.revnix.io/docs/react-native/errors-and-transfers)
+- [API reference](https://www.revnix.io/docs/react-native/reference)
 
-- `"resolved"`: Apple named a Search Ads campaign. Final.
-- `"organic"`: Apple answered, but this was not an ASA install. Final.
-- `"pending"`: a freshly minted token is unregistered on Apple's side for a
-  few seconds; worth minting a fresh token and retrying on the next cold
-  start.
+## Migrating from another SDK
 
-Safe to leave unawaited: it never throws, and resolves to `undefined` if
-the client is disposed, the token is blank, storage is memory-only, or the
-request failed.
+Moving from Adapty or RevenueCat? Revnix imports your customers and purchase history, and the SDK calls map one to one.
 
-## Install attribution
+- [Migrate from Adapty](https://www.revnix.io/docs/migrate-from-adapty)
+- [Migrate from RevenueCat](https://www.revnix.io/docs/migrate-from-revenuecat)
 
-Needs 1.2.4 or later. On 1.2.3, call `GET /v1/customers/{id}/attribution`
-yourself.
+## Support
 
-`GET /v1/customers/{id}/attribution` returns the install-attribution verdict
-for the current customer: `installMatch` (`"referrer"` / `"click"` /
-`"impression"` / `"organic"`), `attributedAt`, the campaign facts frozen at
-that judgment (`source`, `medium`, `campaign`, `term`, `content`), the
-evidence behind it (`referrerSource`, `matchSignals`), `linkToken`, and
-`reattributedAt` when a later signal re-attributed the customer.
+- Email [support@revnix.io](mailto:support@revnix.io) with questions, bugs or feature requests.
+- Check the [status page](https://www.revnix.io/status) for incidents.
 
-```ts
-const attribution = await Revnix.client.getAttribution();
-```
+## License
 
-`null` means no install has been recorded yet (a normal cold-start race) or
-the request failed. Pass `onAttribution` to be told about it instead of
-polling: it fires after the first-launch install report resolves and after
-`handleInstallReferrer` / `handleAttributionToken`, whenever the verdict
-differs from the last one delivered (persisted, so an unchanged verdict never
-fires twice). The SDK does not poll: call `getAttribution()` (e.g. at launch)
-to pick up a later re-attribution, which also fires `onAttribution` when it
-changed.
-
-```ts
-Revnix.configure({
-  apiKey, baseUrl, storage,
-  onAttribution: (attribution) => analytics.setUserProperties(attribution),
-});
-```
-
-The SDK never fetches attribution on its own unless `onAttribution` is set.
-
-## Ad revenue
-
-Needs 1.2.4 or later. On 1.2.3, call `POST /v1/ad-revenue` yourself.
-
-```ts
-Revnix.client.logAdRevenue({ revenue: 0.0032, currency: "USD", network: "admob" });
-```
-
-Input: `revenue` (major units, must be > 0), `currency` (ISO 4217), and
-optional `network`, `mediation`, `adUnit`, `placement`, `format`, `eventId`.
-Fire-and-forget: it never blocks or throws, and a non-positive or non-finite
-`revenue` sends nothing.
-
-## Custom events
-
-Report an in-app event Revnix doesn't already track — not a purchase, which
-reports through `registerPurchase`.
-
-```ts
-Revnix.client.track("level_up", { level: 5, difficulty: "hard" });
-```
-
-`event` must match `^[a-z0-9_]{1,64}$` and is recorded as `custom.<event>`;
-`properties` is an optional flat object of strings/numbers/booleans. An
-invalid `event` name sends nothing. Fire-and-forget, like `logAdRevenue`.
-
-## MMP attribution
-
-If you already run an MMP (Adjust, AppsFlyer, Singular, Branch, Kochava,
-Tenjin, Airbridge), call `setAttribution` from its attribution callback so
-Revnix credits revenue to the right network/campaign.
-
-```ts
-// Adjust's attribution callback
-adjustAttributionListener((attribution) => {
-  Revnix.client.setAttribution({
-    provider: "adjust",
-    network: attribution.network,
-    campaign: attribution.campaign,
-    adGroup: attribution.adgroup,
-    creative: attribution.creative,
-  });
-});
-
-// AppsFlyer's onConversionDataSuccess
-onConversionDataSuccess((data) => {
-  if (data.af_status === "Organic") return;
-  Revnix.client.setAttribution({
-    provider: "appsflyer",
-    network: data.media_source,
-    campaign: data.campaign,
-    adGroup: data.af_adset,
-    creative: data.af_ad,
-  });
-});
-```
-
-Fire-and-forget, like `logAdRevenue`: it never blocks or throws.
-
-## Uninstall measurement
-
-Revnix measures uninstalls the way Adjust/AppsFlyer do: hand it the device's
-push token, and once a day a silent push probes every registered device;
-when APNs/FCM reports a token dead, the customer gets an `app.uninstalled`
-event. Register the token whenever your push library delivers or refreshes
-one:
-
-```ts
-// iOS: your push library's registration callback (APNs device token)
-// Android: your push library's onNewToken / getToken()
-messaging().onTokenRefresh((token) => Revnix.client.setPushToken(token));
-```
-
-Fire-and-forget, like `setAttribution`: it never blocks or throws, dedupes
-per customer+token, and the same token passed to `setPushToken` again after
-`logout()`/`identify()` changed the customer is sent again. **iOS/Android
-only** — on web it's a no-op, there is no device
-push token to collect. Requires the app to already have push set up (iOS:
-Push Notifications + Background Modes → Remote notifications capability;
-Android: Firebase Cloud Messaging); no notification permission needed, the
-probe is a silent/data-only message. See
-[Uninstall measurement](https://revnix.io/docs/uninstall-measurement).
-
-## Last deep link
-
-The SDK remembers the most recent link it saw, from either `handleDeepLink`
-or a delivered deferred deep link, so you can ask for it again later, for
-example after login or onboarding swallowed the original delivery:
-
-```ts
-const last = await Revnix.client.getLastDeepLink();
-if (last) router.push(last.url);
-```
-
-`last` is `{ url, receivedAt }` or `null` when nothing has been recorded yet.
-A dashboard preview link (`…?revnix_preview=<token>`) is never recorded. The
-value is not cleared on logout.
-
-## A/B tests
-
-`resolvePlacement` sends the current customer id, so a running A/B test on
-that placement serves this customer their assigned variant. The returned
-`offering` and `paywall` are **already the variant's**; render what you get.
-The assignment is exposed only so you can attribute your own analytics:
-
-```ts
-const { offering, paywall, experiment } = await Revnix.client.resolvePlacement(
-  "paywall_main"
-);
-if (experiment) {
-  analytics.track("paywall_shown", {
-    experiment: experiment.key,
-    variant: experiment.variantId,
-  });
-}
-```
-
-`experiment` is `null` when no running test covers the placement. Assignment
-is sticky per customer, survives `identify()` merges, and enrolls the
-customer exactly once; the server records an `experiment.enrolled` ledger
-event in the same transaction as the assignment.
-
-### Targeting: `setAttributes`
-
-A test can be narrowed to an *audience*: conditions over customer
-attributes. `setAttributes` is how a mobile app supplies the facts those
-conditions read:
-
-```ts
-await Revnix.client.setAttributes({
-  country: "US",
-  app_version: "4.2.0",
-  lifetime_orders: 3,
-  stale_key: null, // null deletes
-});
-```
-
-Unlike the fire-and-forget beacons this **awaits** the write, because the very
-next `resolvePlacement` may depend on it and silently racing the audience
-check would make targeting look broken. Set the attributes an audience targets
-*before* the first resolve on a covered placement: eligibility is evaluated at
-that resolve, and a customer described only afterwards enrolls on their next
-one.
-
-This is the one write under `/v1/customers/*` a publishable key may make. Two
-server rules bound it, and each rejects the whole batch rather than applying
-part of it: `email` and `username` are reserved (secret key, from your own
-backend), and an attribute your backend already set cannot be changed from a
-device.
-
-## Diagnostics
-
-The SDK swallows failures it can recover from (retry-queue drains, placement
-prefetches, install and paywall-view reports, storage read/write errors). `onDiagnostic` surfaces them: it is called with `{ op, error, at }` for every
-such failure (ops include `retryPendingPurchases`, `prefetchPlacement`,
-`waitForEntitlements`, `reportInstall`, `logPaywallShown`, `logPaywallClosed`,
-`logPaywallEvent`, `paywall.render`, `storageRead`, `storageWrite`,
-`handleInstallReferrer`, `handleAttributionToken`, `resolveDeepLink`,
-`getLastDeepLink`, `rememberDeepLink`, `onDeferredDeepLink`,
-`onImplicitPaywall`, `implicitConfig`, `implicitLaunch`,
-`implicit:<placement>`, `preview`, `lifecycleSubscribe`, `session`,
-`getAttribution`, `onAttribution`, `logAdRevenue`, `track`, `setAttribution`,
-`setPushToken`);
-exceptions thrown by your callback are swallowed. The count of background
-failures since the last report also rides the next request as an
-`X-Revnix-Bg-Failures: <n>` header, so the backend can see silent client pain
-without any app-side wiring. One related guard: a 200 response with a
-non-JSON body (captive portal, misbehaving proxy) throws a *retryable*
-`RevnixError` instead of returning garbage.
-
-`paywall.render` is the one op nothing on the network produces: a block
-paywall reporting a paint string it could not read (a gradient, a clip, a
-tile size this build does not draw). `RevnixPaywall` routes those through
-`client.reportRenderDiagnostic(message)`, so a host that already wired
-`onDiagnostic` sees render fallbacks with no new wiring. Call it yourself only
-if you are drawing paywall blocks with your own renderer.
-
-## Errors
-
-All API errors extend `RevnixError` (`status` + `isRetryable`, which is true
-for status 0, 429, and 5xx):
-
-| Class | Status | When |
-|---|---|---|
-| `RevnixTimeoutError` | 0 | Request exceeded `requestTimeoutMs` |
-| `RevnixNetworkError` | 0 | fetch failed (offline, DNS, TLS) |
-| `RevnixAuthError` | 401/403 | Bad/revoked key, or publishable key on a secret-gated endpoint |
-| `PurchaseBlockedError` | 409 | Purchase token owned by another customer, transfers blocked |
-| `RevnixRateLimitError` | 429 | Rate limited; `retryAfterMs` when the server sent `Retry-After` |
-| `RevnixError` | other | Anything else; message from the server's `error` field |
-
-## Rendering the paywall (React Native)
-
-`RevnixPaywall` renders a published paywall design exactly as the dashboard
-paywall builder previews it; layout, copy, accent color, hero image, badge,
-highlighted package, feature list, social proof, and offer framing all come
-from the placement's `paywall.config`. The app supplies localized store prices
-(StoreKit / Play Billing) and the purchase handlers, so the display never
-disagrees with the charge.
-
-`config.template` selects one of **nine layouts**, `focus`, `feature-list`,
-`minimal` (the three original templates, byte-identical to how they always
-rendered) plus `hero`, `timeline`, `plans`, `feature-grid`, `offer`, and
-`reveal`. The dashboard's 200-template gallery is presets over these nine, so
-a preset never introduces a shape this component cannot draw. Two optional
-blocks compose onto any layout: `config.review` (star rating, quote, author,
-and a `count` line under the CTA) and `config.offer` (struck-through anchor
-price on the highlighted package, urgency line above the CTA).
-
-```tsx
-import { RevnixPaywall } from "react-native-revnix/ui";
-
-const { paywall, offering } = await Revnix.client.resolvePlacement("paywall_main");
-if (!paywall || !offering) return null; // both are nullable; guard first
-
-<RevnixPaywall
-  config={paywall.config}
-  packages={offering.packages.map((pkg) => ({
-    packageId: pkg.packageId,
-    title: pkg.product?.displayName ?? pkg.productId,
-    priceLabel: storePriceFor(pkg.productId), // localized, from the store
-  }))}
-  onPurchase={(packageId) => startPurchase(packageId)}
-  loading={purchasing}
-  onRestore={restorePurchases}
-  onTerms={openTerms}
-  onPrivacy={openPrivacy}
-  client={Revnix.client}                 // auto-reports paywall.viewed on mount
-  placementKey="paywall_main"
-/>;
-```
-
-- Pass `client` to report a `paywall.viewed` event once per mount (opt out
-  with `disableViewTracking`); or call `client.logPaywallShown()` yourself, it's fire-and-forget and never throws.
-- Report the **end** of the display too: `logPaywallShown()` hands back the
-  `viewId` it minted, and `client.logPaywallClosed(viewId, …)` closes that one
-  display. The shared id is what makes it idempotent, so a retry or a
-  double-dismiss can never count two. Without the close, a funnel knows how
-  many saw the paywall but not how many left without buying.
-- `client.logPaywallEvent(event, viewId, options?)` reports what happened **in
-  between**, one of six: `selected`, `purchase_started`,
-  `purchase_abandoned`, `purchase_failed`, `restore`, `error`. `RevnixPaywall`
-  sends `selected`, `purchase_started`, `restore` and a no-products `error`
-  for you; the purchase *outcome* is yours, because your app performs the
-  store call. All six are pure ledger history: over-reporting can skew a
-  report, never grant or revoke access.
-- Theming: dark by default, `config.mode: "light"` switches to the light
-  theme; override any token via the `theme` prop
-  (`DEFAULT_PAYWALL_THEME` / `LIGHT_PAYWALL_THEME` are exported).
-- Selection can be controlled (`selectedPackageId` + `onSelectPackage`) or
-  left internal (defaults to the highlighted package).
-- Pass `onClose` to let the customer dismiss: without it no close is drawn;
-  with `client` the close is reported as `paywall.closed`.
-- Designed (block) paywalls: `locale` picks the copy language (defaults to
-  the device's), `gradient` takes your LinearGradient (expo-linear-gradient
-  or react-native-linear-gradient), `blur` takes a BlurView,
-  `fontFamilyMap` maps design fonts to registered faces, `onDiagnostic`
-  receives render fallbacks when no `client` is passed.
-- Unreleased (on `main`, not in 1.3.0): `Revnix.setLocale(tag)` (also
-  exported from `react-native-revnix/ui`) forces every designed paywall mounted
-  after the call into `tag`'s language; `Revnix.setLocale()` clears it. A
-  `locale` prop still wins for that one view. The links block's Restore,
-  Terms and Privacy labels follow the paywall's language.
-
-The `/ui` entrypoint is separate from the core so pure-JS consumers never
-load `react` / `react-native` (both are peer dependencies used only by `/ui`).
-
-## Endpoints used
-
-| Method | Endpoint | Key |
-|---|---|---|
-| `registerPurchase` | `POST /v1/purchases` | any |
-| `getEntitlements` / `waitForEntitlements` | `GET /v1/customers/{id}/entitlements` | any |
-| `getIdentity` | `GET /v1/customers/{id}/identity` | secret |
-| `resolvePlacement` | `GET /v1/placements/{key}/offering` | any |
-| install report | `POST /v1/installs` | any |
-| `logPaywallShown` | `POST /v1/paywalls/viewed` | any |
-| `logPaywallClosed` | `POST /v1/paywalls/closed` | any |
-| `logPaywallEvent` | `POST /v1/paywalls/events` | any |
-| `setAttributes` | `POST /v1/customers/{id}/attributes` | any |
-| `identify` | `POST /v1/identify` | secret |
-| `alias` | `POST /v1/customers/{id}/alias` | secret |
-| implicit placement config | `GET /v1/config` | any |
-| implicit moments / `handleDeepLink` | `POST /v1/placements/triggered` | any |
-| dashboard preview link | `GET /v1/paywalls/preview/{token}` | any |
-| `resolveDeepLink` | `GET /v1/links/resolve` | any (since 1.2.2) |
-| `handleInstallReferrer` / `handleAttributionToken` | `POST /v1/installs` | any |
-| `getAttribution` | `GET /v1/customers/{id}/attribution` | any (since 1.2.4) |
-| `logAdRevenue` | `POST /v1/ad-revenue` | any (since 1.2.4) |
-| `setPushToken` | `POST /v1/push-token` | any (since 1.3.0) |
-| `track` | `POST /v1/events` | any (since 1.3.0) |
-| `setAttribution` | `POST /v1/attribution` | any (since 1.3.0) |
-
-## Development
-
-```sh
-npm install
-npm test
-npm run build   # CJS + ESM (dist/ and dist/esm/)
-```
+Revnix SDK is available under the MIT license. See [LICENSE](https://github.com/Oth-tech/revnix-sdk/blob/main/LICENSE) for details.
