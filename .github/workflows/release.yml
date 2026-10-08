@@ -1,17 +1,3 @@
-# Release revnix-react to npm.
-#
-# Dispatched by revnix-app's "Release SDKs" workflow on every merge to its
-# main, and runnable by hand. One run = one version: it moves `## Unreleased`
-# in CHANGELOG.md into a dated entry, bumps package.json / package-lock.json /
-# src/version.ts, lands that through a pull request (the org ruleset gives
-# main merge commits only and no direct pushes, so there is no other way in),
-# publishes the merge commit, then tags it and cuts a GitHub release.
-#
-# Publishing uses npm trusted publishing (OIDC): no long-lived token. The
-# package's trusted publisher on npmjs.com must name this repo and this file.
-# An NPM_TOKEN secret, if present, is used instead — for a break-glass
-# publish only.
-
 name: Release
 run-name: "Release ${{ inputs.run_key || format('manual-{0}', github.run_id) }}"
 
@@ -245,7 +231,7 @@ jobs:
           if [ "$PENDING" != "true" ] && [ "$BUMP" = "auto" ] && [ "$CHANGED" = "false" ]; then
             CURRENT=$(node -p "require('./package.json').version")
             {
-              echo "## revnix-react: no release"
+              echo "## react-native-revnix: no release"
               echo ""
               echo "no changes since v$CURRENT, skipped"
               echo "- status: ${{ job.status }}"
@@ -253,7 +239,7 @@ jobs:
             exit 0
           fi
           {
-            echo "## revnix-react ${NEXT:-?}"
+            echo "## react-native-revnix ${NEXT:-?}"
             echo ""
             if [ "$PENDING" = "true" ]; then
               echo "- published the version already on main (a previous run merged it but did not publish)"

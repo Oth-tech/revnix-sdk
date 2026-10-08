@@ -427,7 +427,7 @@ export interface PaywallConfig {
    *  When present RevnixPaywall renders THIS and the fields above act as the
    *  fallback for clients that predate block rendering — so an older app
    *  keeps showing a sane classic screen instead of nothing. Typed as the
-   *  block document in "revnix-react/ui"; the core entrypoint keeps it opaque
+   *  block document in "react-native-revnix/ui"; the core entrypoint keeps it opaque
    *  so non-UI consumers pull in no renderer types. */
   blocks?: unknown;
 }

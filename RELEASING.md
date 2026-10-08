@@ -21,6 +21,6 @@ So the only thing a change needs is a bullet under the right `###` heading in
 and release even with nothing new).
 
 One-time setup (an npm owner and an org admin): on npmjs.com, package
-`revnix-react` → Settings → Trusted Publisher → GitHub Actions, organisation
+`react-native-revnix` → Settings → Trusted Publisher → GitHub Actions, organisation
 `Oth-tech`, repository `revnix-sdk`, workflow `release.yml`. Nothing else is
 needed here; the dispatching token lives in revnix-app.
