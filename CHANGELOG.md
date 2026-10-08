@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.4.2 (2026-10-08)
+
 ### Changed
 
 - Package renamed to `react-native-revnix`; `revnix-react` is no longer
