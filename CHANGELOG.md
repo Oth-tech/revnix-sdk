@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.5.0 (2026-10-08)
+
+Changes since 1.4.2 were not recorded here; see the commit log.
+
 ## 1.4.2 (2026-10-08)
 
 ### Changed
