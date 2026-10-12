@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Added
+
+- **`flushEvents()`**: send every queued `track` and paywall interaction
+  event now.
+- **`preload(placementKeys)`**: fetch placements ahead of time so the next
+  `resolvePlacement` answers from the cache. Never throws.
+- **`prefetchPaywallImages(resolution)`** from `react-native-revnix/ui`:
+  warms React Native's image cache with the paywall's hero, image-block and
+  background images.
+
+### Changed
+
+- `track` and `logPaywallEvent` queue to storage (`revnix.eventQueue`, newest
+  1000 kept) and resolve once queued. Events go out in batches of up to 100
+  to `POST /v1/events` / `POST /v1/paywalls/events`: at 20 queued, 10 s after
+  the first, when the app goes to the background, and on the next launch. A
+  transient failure keeps them and holds sends for 30 s. Paywall events now
+  always carry `eventId` (the `viewId` by default).
+- `resolvePlacement` answers instantly from a cache under 24 h old fetched
+  for the same customer since the last `setAttributes` or purchase, and
+  refreshes it in the background. A 401/403/404/409 seen by that refresh
+  drops the cache.
+- With a cached entitlements snapshot, the network read times out after 3 s
+  (or `requestTimeoutMs`, if lower) and the cache answers.
+- The pending-purchase queue keeps the newest 100 and drops purchases queued
+  more than 30 days ago.
+
 ## 1.5.0 (2026-10-08)
 
 Changes since 1.4.2 were not recorded here; see the commit log.

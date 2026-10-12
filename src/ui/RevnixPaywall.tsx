@@ -34,11 +34,12 @@ import type {
   PaywallConfig,
   PaywallInteraction,
   PaywallPurchaseOutcome,
+  PlacementResolution,
   RegisterPurchaseResult,
 } from "../types.js";
 import { PREVIEW_PLACEMENT_KEY } from "../implicit.js";
 import { getStoreAdapter } from "../store.js";
-import type { RevnixClient } from "../client.js";
+import { paywallImageUrls, type RevnixClient } from "../client.js";
 import type { PaywallBlockDoc } from "../blocks/types.js";
 import type { FontFamilyMap } from "../blocks/style.js";
 import { withAlpha } from "../blocks/color.js";
@@ -253,6 +254,19 @@ export interface RevnixPaywallProps {
    *  Only designed (block) paywalls are localized; the classic template
    *  layouts below render `config`'s own copy whatever this says. */
   locale?: string;
+}
+
+/** Warms React Native's image cache with every image `resolution`'s paywall
+ *  loads, so it paints without waiting on the network. Pair it with
+ *  `client.preload` / `resolvePlacement`. Never throws. */
+export async function prefetchPaywallImages(
+  resolution: PlacementResolution | null
+): Promise<void> {
+  await Promise.all(
+    paywallImageUrls(resolution?.paywall).map((url) =>
+      Image.prefetch(url).catch(() => false)
+    )
+  );
 }
 
 export function RevnixPaywall(props: RevnixPaywallProps) {

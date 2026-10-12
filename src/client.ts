@@ -67,7 +67,18 @@ const PENDING_PURCHASES_KEY = "revnix.pendingPurchases";
 const PLACEMENTS_CACHE_KEY = "revnix.placements";
 const LAST_ATTRIBUTION_KEY = "revnix.lastAttribution";
 const LAST_PUSH_TOKEN_KEY = "revnix.lastPushToken";
+const EVENT_QUEUE_KEY = "revnix.eventQueue";
+const PLACEMENTS_INVALIDATED_AT_KEY = "revnix.placementsInvalidatedAt";
 const DEFAULT_TIMEOUT_MS = 10_000;
+const EVENT_QUEUE_CAP = 1000;
+const EVENT_BATCH_SIZE = 100;
+const EVENT_FLUSH_THRESHOLD = 20;
+const EVENT_FLUSH_DELAY_MS = 10_000;
+const EVENT_RETRY_HOLD_MS = 30_000;
+const PLACEMENT_FRESH_MS = 24 * 60 * 60 * 1000;
+const CACHED_ENTITLEMENTS_TIMEOUT_MS = 3_000;
+const PURCHASE_QUEUE_CAP = 100;
+const PURCHASE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // REV-204 (L10): how many customers keep a cached entitlements snapshot.
 const ENTITLEMENTS_CACHE_MAX = 4;
@@ -105,6 +116,57 @@ const CLOCK_ROLLBACK_TOLERANCE_MS = 5 * 60 * 1000;
 interface PendingPurchase {
   customerId: string;
   input: RegisterPurchaseInput;
+  queuedAt?: number;
+}
+
+interface PlacementCacheEntry {
+  data: PlacementResolution;
+  fetchedAt: number;
+  customerId?: string;
+}
+
+interface QueuedEvent {
+  path: string;
+  body: Record<string, unknown>;
+}
+
+function batchResults(
+  response: unknown,
+  path: string
+): Array<{ status: number; error?: string }> {
+  const results = (response as { results?: unknown } | null)?.results;
+  if (
+    Array.isArray(results) &&
+    results.every(
+      (r) => typeof r === "object" && r !== null && typeof r.status === "number"
+    )
+  ) {
+    return results;
+  }
+  throw new RevnixError(0, `Revnix: server returned an ill-shaped batch response for ${path}`);
+}
+
+export function paywallImageUrls(value: unknown): string[] {
+  const found = new Set<string>();
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (typeof node !== "object" || node === null) return;
+    const o = node as Record<string, unknown>;
+    const background = o.background as { image?: { url?: unknown } } | null | undefined;
+    for (const url of [
+      o.heroImageUrl,
+      o.type === "image" ? o.url : undefined,
+      background?.image?.url,
+    ]) {
+      if (typeof url === "string" && url.length > 0) found.add(url);
+    }
+    Object.values(o).forEach(visit);
+  };
+  visit(value);
+  return [...found];
 }
 
 interface InstallResponse {
@@ -213,6 +275,9 @@ export class RevnixClient {
    *  /v1/installs uses, and independent of the device header (which an app
    *  can turn off entirely). */
   private freshInstall = false;
+  private eventFlush: Promise<void> | null = null;
+  private eventTimer: ReturnType<typeof setTimeout> | null = null;
+  private eventRetryAt = 0;
 
   constructor(config: RevnixConfig) {
     if (!config.apiKey) throw new Error("Revnix: apiKey is required");
@@ -283,7 +348,11 @@ export class RevnixClient {
       config.implicitPlacements ?? config.onImplicitPaywall !== undefined;
     this.sessionTimeoutMs =
       config.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
-    if (this.implicitEnabled) this.startImplicit(config.lifecycle);
+    this.subscribeLifecycle(config.lifecycle);
+    if (this.implicitEnabled) this.startImplicit();
+    void this.readEvents().then((events) => {
+      if (events.length > 0) this.startEventFlush();
+    });
     const { document, location } = globalThis as {
       document?: unknown;
       location?: { href: string; search: string };
@@ -396,6 +465,7 @@ export class RevnixClient {
     const customerId = await this.customerIdPromise;
     try {
       const result = await this.postPurchase(customerId, input);
+      await this.invalidatePlacements();
       // Identity resolution may have merged this device's id away (restore
       // after login), so the server's id is the one to keep using.
       //
@@ -522,23 +592,28 @@ export class RevnixClient {
 
   /** C7: retry purchases that failed to register and were persisted locally.
    *  Runs automatically at construction; call again when connectivity returns.
-   *  Idempotent and safe to call repeatedly. */
+   *  Idempotent and safe to call repeatedly. Purchases queued more than 30
+   *  days ago are dropped with a diagnostic. */
   async retryPendingPurchases(): Promise<void> {
+    const now = Date.now();
+    await this.mutateQueue((queue) =>
+      queue.some((q) => q.queuedAt === undefined)
+        ? queue.map((q) => ({ ...q, queuedAt: q.queuedAt ?? now }))
+        : queue
+    );
     const queue = await this.readPurchaseQueue();
     for (const item of queue) {
       if (this.disposed) return;
-      try {
-        await this.postPurchase(item.customerId, item.input);
-        // Delivered — remove it.
-      } catch (err) {
-        if (worthQueueing(err)) {
-          // REV-200 (M26): a queued purchase that STILL cannot land is the
-          // most important background failure there is — report it.
+      if (now - (item.queuedAt ?? now) > PURCHASE_MAX_AGE_MS) {
+        this.diag("retryPendingPurchases", new Error(`expired ${pendingKey(item.input)}`));
+      } else {
+        try {
+          await this.postPurchase(item.customerId, item.input);
+          await this.invalidatePlacements();
+        } catch (err) {
           this.diag("retryPendingPurchases", err);
-          continue; // transient — keep for next time
+          if (worthQueueing(err)) continue;
         }
-        // Permanent rejection — remove it.
-        this.diag("retryPendingPurchases", err);
       }
       // Remove THIS item from the queue as it stands now, not from the
       // snapshot iterated above: each postPurchase can spend seconds in a
@@ -600,11 +675,15 @@ export class RevnixClient {
   /** The authoritative network read: no TTL, no cache fallback — throws so
    *  the caller sees the real failure (waitForEntitlements needs 429s). */
   private async fetchFreshEntitlements(
-    customerId: string
+    customerId: string,
+    timeoutMs?: number
   ): Promise<CustomerEntitlements> {
     const fresh = await this.request<CustomerEntitlements>(
       "GET",
-      `/v1/customers/${encodeURIComponent(customerId)}/entitlements`
+      `/v1/customers/${encodeURIComponent(customerId)}/entitlements`,
+      undefined,
+      undefined,
+      timeoutMs
     );
     await this.writeEntitlementsCache(customerId, fresh);
     const result = { ...fresh, stale: false, fetchedAt: Date.now() };
@@ -615,8 +694,14 @@ export class RevnixClient {
   private async fetchEntitlementsWithFallback(
     customerId: string
   ): Promise<CustomerEntitlements> {
+    const hasCache = (await this.readEntitlementsCache(customerId)) !== null;
     try {
-      return await this.fetchFreshEntitlements(customerId);
+      return await this.fetchFreshEntitlements(
+        customerId,
+        hasCache
+          ? Math.min(CACHED_ENTITLEMENTS_TIMEOUT_MS, this.requestTimeoutMs)
+          : undefined
+      );
     } catch (err) {
       // REV-198 (CTO-R2 M22): the cache exists to ride out failures that
       // might succeed next time — network, timeout, 429, 5xx. A deliberate
@@ -740,52 +825,80 @@ export class RevnixClient {
   }
 
   /** Resolve a named in-app location to the currently published offering —
-   *  the one-line paywall call. REV-157: reads the network first and caches
-   *  the result; if that read FAILS (offline / incident) it falls back to the
-   *  last cached resolution with `stale: true`, so the paywall renders the
-   *  last published version rather than not at all. Throws only when there
-   *  is nothing cached. */
+   *  the one-line paywall call. Served instantly from a cache under 24 h old
+   *  that was fetched for this customer since the last `setAttributes` or
+   *  purchase, refreshed in the background. Otherwise reads the network and
+   *  caches the result; if that read FAILS (offline / incident) it falls back
+   *  to the last cached resolution with `stale: true`, so the paywall renders
+   *  the last published version rather than not at all. Throws only when
+   *  there is nothing cached. A deliberate rejection seen by the background
+   *  refresh drops the cache, so the next resolve throws it. */
   async resolvePlacement(placementKey: string): Promise<PlacementResolution> {
     const customerId = await this.customerIdPromise;
+    const cached = await this.readPlacementCache(placementKey, customerId);
+    const age = Date.now() - (cached?.fetchedAt ?? 0);
+    if (
+      cached &&
+      cached.customerId === customerId &&
+      cached.fetchedAt > (await this.placementsInvalidatedAt()) &&
+      age >= 0 &&
+      age <= PLACEMENT_FRESH_MS
+    ) {
+      void this.refreshPlacement(placementKey);
+      return { ...cached.data, stale: false, fetchedAt: cached.fetchedAt };
+    }
     try {
-      // REV-219: identify the caller so a running experiment on this
-      // placement can assign a (sticky, deterministic) variant. Servers
-      // without experiments simply ignore the parameter. An EPHEMERAL anon
-      // id (memory-only storage — new id every launch) is deliberately NOT
-      // sent: each launch would enroll a phantom customer and flip the same
-      // user between variants; the server serves the placement default
-      // when no customer is identified (same guard class as M5 installs).
-      const path = `/v1/placements/${encodeURIComponent(placementKey)}/offering`;
-      // REV-268: the device facts ride along so the server can evaluate
-      // targeting rules against THIS device on THIS request, and store them
-      // as device.* attributes. Not sent for an ephemeral anon id: the server
-      // would have no customer to keep them on, and it serves such callers
-      // the untargeted default anyway.
-      const deviceHeader = this.ephemeralAnonId
-        ? null
-        : await this.deviceHeaderPromise;
-      const fresh = await this.request<PlacementResolution>(
-        "GET",
-        this.ephemeralAnonId
-          ? path
-          : `${path}?customer=${encodeURIComponent(customerId)}`,
-        undefined,
-        deviceHeader ? { [DEVICE_HEADER]: deviceHeader } : undefined
-      );
-      await this.writePlacementCache(placementKey, fresh, customerId);
-      return { ...fresh, stale: false, fetchedAt: Date.now() };
+      return await this.fetchPlacement(placementKey);
     } catch (err) {
       // REV-198 (M22): same rule as getEntitlements — an unpublished catalog
       // (409) or deleted placement (404) is the server's deliberate answer,
       // and caching over it meant an unpublished paywall kept rendering
       // fleet-wide with no way to pull it.
       if (err instanceof RevnixError && !err.isRetryable) throw err;
-      const cached = await this.readPlacementCache(placementKey, customerId);
-      if (cached) {
-        return { ...cached.data, stale: true, fetchedAt: cached.fetchedAt };
+      const fallback = await this.readPlacementCache(placementKey, customerId);
+      if (fallback) {
+        return { ...fallback.data, stale: true, fetchedAt: fallback.fetchedAt };
       }
       throw err;
     }
+  }
+
+  /** Fetch these placements now so the next `resolvePlacement` answers from
+   *  the cache. Never throws; failures report to `onDiagnostic`. Paywall
+   *  images are warmed by `prefetchPaywallImages` from
+   *  `react-native-revnix/ui`. */
+  async preload(placementKeys: string[]): Promise<void> {
+    await Promise.all(placementKeys.map((key) => this.refreshPlacement(key)));
+  }
+
+  private async refreshPlacement(placementKey: string): Promise<void> {
+    try {
+      await this.fetchPlacement(placementKey);
+    } catch (err) {
+      if (err instanceof RevnixError && !err.isRetryable) {
+        await this.deletePlacementCache(placementKey);
+      }
+      this.diag("resolvePlacement", err);
+    }
+  }
+
+  private async fetchPlacement(placementKey: string): Promise<PlacementResolution> {
+    const customerId = await this.customerIdPromise;
+    const fetchedAt = Date.now();
+    const path = `/v1/placements/${encodeURIComponent(placementKey)}/offering`;
+    const deviceHeader = this.ephemeralAnonId
+      ? null
+      : await this.deviceHeaderPromise;
+    const fresh = await this.request<PlacementResolution>(
+      "GET",
+      this.ephemeralAnonId
+        ? path
+        : `${path}?customer=${encodeURIComponent(customerId)}`,
+      undefined,
+      deviceHeader ? { [DEVICE_HEADER]: deviceHeader } : undefined
+    );
+    await this.writePlacementCache(placementKey, fresh, customerId, fetchedAt);
+    return { ...fresh, stale: false, fetchedAt: Date.now() };
   }
 
   /** REV-157: the last resolution cached for `placementKey`, with NO network
@@ -896,7 +1009,8 @@ export class RevnixClient {
    *    - `restore` — restore purchases was tapped
    *    - `error` — the paywall itself failed (config, products, render)
    *
-   *  Fire-and-forget like the other beacons: never blocks, never throws.
+   *  Queued and sent in batches (see `flushEvents`): resolves once queued,
+   *  never throws.
    *
    *  `viewId` is the id `logPaywallShown` returned for THIS display. Passing
    *  it is what threads the whole life of one impression together and puts
@@ -913,7 +1027,7 @@ export class RevnixClient {
    *  which caps the report at one per display per event type. Pass one per
    *  occurrence (and reuse it across your own retries) to record every
    *  occurrence — e.g. a customer who fails, retries and fails again. */
-  logPaywallEvent(
+  async logPaywallEvent(
     event: PaywallInteraction,
     viewId: string,
     options?: {
@@ -926,29 +1040,8 @@ export class RevnixClient {
       /** Idempotency key for this occurrence; defaults to `viewId`. */
       eventId?: string;
     }
-  ): void {
+  ): Promise<void> {
     if (options?.placementKey === PREVIEW_PLACEMENT_KEY) return;
-    void this.customerIdPromise
-      .then((customerId) =>
-        this.request("POST", "/v1/paywalls/events", {
-          customerId,
-          viewId,
-          event,
-          occurredAt: Date.now(),
-          sdkVersion: SDK_VERSION,
-          ...(options?.eventId ? { eventId: options.eventId } : {}),
-          ...(options?.placementKey ? { placementKey: options.placementKey } : {}),
-          ...(options?.paywallId ? { paywallId: options.paywallId } : {}),
-          ...(options?.productId ? { productId: options.productId } : {}),
-          ...(options?.code ? { code: options.code } : {}),
-          ...(options?.message
-            ? { message: options.message.slice(0, 1024) }
-            : {}),
-        })
-      )
-      .catch((err) => this.diag("logPaywallEvent", err));
-    // REV-272: backing out of the store sheet is the `transaction_abandon`
-    // moment. Reuses the paywall.purchase_abandoned event just reported.
     if (event === "purchase_abandoned") {
       this.fireImplicitFromPaywall(
         "transaction_abandon",
@@ -956,6 +1049,23 @@ export class RevnixClient {
         options?.paywallId
       );
     }
+    const customerId = await this.customerIdPromise;
+    await this.enqueueEvent({
+      path: "/v1/paywalls/events",
+      body: {
+        customerId,
+        viewId,
+        event,
+        eventId: options?.eventId ?? viewId,
+        occurredAt: Date.now(),
+        sdkVersion: SDK_VERSION,
+        ...(options?.placementKey ? { placementKey: options.placementKey } : {}),
+        ...(options?.paywallId ? { paywallId: options.paywallId } : {}),
+        ...(options?.productId ? { productId: options.productId } : {}),
+        ...(options?.code ? { code: options.code } : {}),
+        ...(options?.message ? { message: options.message.slice(0, 1024) } : {}),
+      },
+    });
   }
 
   /** Reports one ad impression's payout (POST /v1/ad-revenue).
@@ -984,28 +1094,136 @@ export class RevnixClient {
   }
 
   /** Reports one custom in-app event (POST /v1/events), not for purchases.
-   *  Fire-and-forget like the other beacons: never blocks, never throws. */
-  track(
+   *  Queued and sent in batches (see `flushEvents`): resolves once queued,
+   *  never throws. */
+  async track(
     event: string,
     properties?: Record<string, string | number | boolean>,
     options?: { eventId?: string }
-  ): void {
+  ): Promise<void> {
     if (!/^[a-z0-9_]{1,64}$/.test(event)) {
       this.diag("track", new Error(`invalid event name: ${event}`));
       return;
     }
     const eventId = options?.eventId ?? generateEventId();
-    void this.customerIdPromise
-      .then((customerId) =>
-        this.request("POST", "/v1/events", {
-          customerId,
-          event,
-          eventId,
-          occurredAt: Date.now(),
-          ...(properties ? { properties } : {}),
-        })
-      )
-      .catch((err) => this.diag("track", err));
+    const customerId = await this.customerIdPromise;
+    await this.enqueueEvent({
+      path: "/v1/events",
+      body: {
+        customerId,
+        event,
+        eventId,
+        occurredAt: Date.now(),
+        ...(properties ? { properties } : {}),
+      },
+    });
+  }
+
+  /** Send every queued `track` and paywall interaction event now. Events are
+   *  otherwise sent in batches: at 20 queued, 10 s after the first, when the
+   *  app goes to the background, and on the next launch. Never throws; a
+   *  transient failure keeps the events and holds further sends for 30 s. */
+  async flushEvents(): Promise<void> {
+    await this.eventFlush;
+    this.startEventFlush();
+    await this.eventFlush;
+  }
+
+  private async readEvents(): Promise<QueuedEvent[]> {
+    try {
+      const parsed = JSON.parse((await this.storage.getItem(EVENT_QUEUE_KEY)) ?? "[]");
+      return Array.isArray(parsed) ? (parsed as QueuedEvent[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private mutateEvents(mutate: (events: QueuedEvent[]) => QueuedEvent[]): Promise<number> {
+    return this.withStorageLock(async () => {
+      const next = mutate(await this.readEvents());
+      try {
+        await this.storage.setItem(EVENT_QUEUE_KEY, JSON.stringify(next));
+      } catch (err) {
+        this.diag("storageWrite", err);
+      }
+      return next.length;
+    });
+  }
+
+  // ponytail: the whole queue is re-serialized per event; keep it in memory if 1000-item offline queues show up in profiles.
+  private async enqueueEvent(event: QueuedEvent): Promise<void> {
+    const count = await this.mutateEvents((events) => {
+      const kept = events.slice(Math.max(0, events.length - EVENT_QUEUE_CAP + 1));
+      if (kept.length < events.length) {
+        this.diag("eventQueue", new Error("queue full, dropped the oldest event"));
+      }
+      return [...kept, event];
+    });
+    if (count >= EVENT_FLUSH_THRESHOLD) this.startEventFlush();
+    else this.armEventTimer(EVENT_FLUSH_DELAY_MS);
+  }
+
+  private armEventTimer(ms: number): void {
+    if (this.eventTimer !== null || this.disposed) return;
+    this.eventTimer = setTimeout(() => {
+      this.eventTimer = null;
+      this.startEventFlush();
+    }, ms);
+  }
+
+  private startEventFlush(): void {
+    if (this.eventFlush !== null || this.disposed) return;
+    const hold = this.eventRetryAt - Date.now();
+    if (hold > 0) {
+      this.armEventTimer(hold);
+      return;
+    }
+    this.eventFlush = this.runEventFlush().finally(() => {
+      this.eventFlush = null;
+    });
+  }
+
+  private async runEventFlush(): Promise<void> {
+    const byPath = new Map<string, QueuedEvent[]>();
+    for (const event of await this.withStorageLock(() => this.readEvents())) {
+      byPath.set(event.path, [...(byPath.get(event.path) ?? []), event]);
+    }
+    for (const [path, events] of byPath) {
+      for (let start = 0; start < events.length; start += EVENT_BATCH_SIZE) {
+        const chunk = events.slice(start, start + EVENT_BATCH_SIZE);
+        try {
+          const response = await this.request<unknown>("POST", path, {
+            events: chunk.map((e) => e.body),
+          });
+          batchResults(response, path).forEach((result, i) => {
+            if (result.status < 400) return;
+            this.diag(
+              "eventQueue",
+              new RevnixError(
+                result.status,
+                `dropped ${path} event ${String(chunk[i]?.body.eventId)}: ${result.status} ${result.error ?? ""}`
+              )
+            );
+          });
+          await this.removeEvents(chunk);
+        } catch (err) {
+          if (worthQueueing(err)) {
+            this.eventRetryAt = Date.now() + EVENT_RETRY_HOLD_MS;
+            this.diag("eventQueue", err);
+            return;
+          }
+          await this.removeEvents(chunk);
+          this.diag("eventQueue", err);
+        }
+      }
+    }
+  }
+
+  private async removeEvents(sent: QueuedEvent[]): Promise<void> {
+    const sentJson = new Set(sent.map((e) => JSON.stringify(e)));
+    await this.mutateEvents((events) =>
+      events.filter((e) => !sentJson.has(JSON.stringify(e)))
+    );
   }
 
   /** PT11: forward an MMP's attribution callback (Adjust, AppsFlyer, …) so
@@ -1112,6 +1330,7 @@ export class RevnixClient {
       `/v1/customers/${encodeURIComponent(customerId)}/attributes`,
       { attributes }
     );
+    await this.invalidatePlacements();
   }
 
   /** REV-272: hand the SDK the URL that opened your app, from wherever you
@@ -1492,6 +1711,19 @@ export class RevnixClient {
     return extra;
   }
 
+  private subscribeLifecycle(configured: RevnixConfig["lifecycle"]): void {
+    if (configured === false) return;
+    const lifecycle: RevnixLifecycle | null = configured ?? browserLifecycle();
+    if (!lifecycle) return;
+    try {
+      this.lifecycleUnsubscribe = lifecycle.onStateChange((state) =>
+        this.onAppState(state)
+      );
+    } catch (err) {
+      this.diag("lifecycleSubscribe", err);
+    }
+  }
+
   /** REV-272: the launch-time moments, plus the foreground listener that
    *  `session_start` is built on.
    *
@@ -1500,7 +1732,7 @@ export class RevnixClient {
    *  install too when this launch generated the anonymous id. All three are
    *  independent placements, so an app may have any subset configured and the
    *  others cost nothing. */
-  private startImplicit(configured: RevnixConfig["lifecycle"]): void {
+  private startImplicit(): void {
     // freshInstall is set inside loadCustomerId, which the constructor kicked
     // off but did not await — so read it after that promise settles rather
     // than now, when it is still false on a genuine first launch.
@@ -1510,25 +1742,6 @@ export class RevnixClient {
     // are still reported — a launch is a launch whether or not a paywall
     // showed — but an app that configured all three must not have three
     // paywalls pushed onto its first frame.
-    // Subscribed BEFORE the batch, which can take a full network timeout per
-    // moment when offline: a customer who backgrounds the app during that
-    // window and comes back an hour later is a session, and missing the
-    // background transition would lose it.
-    if (configured !== false) {
-      const lifecycle: RevnixLifecycle | null =
-        configured ?? browserLifecycle();
-      if (lifecycle) {
-        try {
-          this.lifecycleUnsubscribe = lifecycle.onStateChange((state) =>
-            this.onAppState(state)
-          );
-        } catch (err) {
-          // A broken adapter costs session detection, not the client.
-          this.diag("lifecycleSubscribe", err);
-        }
-      }
-    }
-
     const sessionExtra = this.consumePreviousSessionMs().catch(
       (err: unknown) => {
         this.diag("session", err);
@@ -1568,6 +1781,8 @@ export class RevnixClient {
 
   private onAppState(state: RevnixAppState): void {
     if (this.disposed) return;
+    if (state === "background") this.startEventFlush();
+    if (!this.implicitEnabled) return;
     if (state === "background") {
       // First report wins: a platform that repeats "background" (a paused
       // Activity re-reporting) must not keep resetting the clock forward.
@@ -1619,6 +1834,8 @@ export class RevnixClient {
     this.lifecycleUnsubscribe = null;
     this.stopStoreObserver?.();
     this.stopStoreObserver = null;
+    if (this.eventTimer !== null) clearTimeout(this.eventTimer);
+    this.eventTimer = null;
   }
 
   /** A block paywall reporting a paint string it could not read. Routed to the
@@ -1867,25 +2084,13 @@ export class RevnixClient {
   // common no-experiment offline paywall keeps working across identity
   // changes.
 
-  private async readPlacementMap(): Promise<
-    Record<
-      string,
-      { data: PlacementResolution; fetchedAt: number; customerId?: string }
-    >
-  > {
+  private async readPlacementMap(): Promise<Record<string, PlacementCacheEntry>> {
     try {
       const raw = await this.storage.getItem(PLACEMENTS_CACHE_KEY);
       if (!raw) return {};
       const parsed = JSON.parse(raw);
       return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<
-            string,
-            {
-              data: PlacementResolution;
-              fetchedAt: number;
-              customerId?: string;
-            }
-          >)
+        ? (parsed as Record<string, PlacementCacheEntry>)
         : {};
     } catch {
       return {};
@@ -1895,7 +2100,7 @@ export class RevnixClient {
   private async readPlacementCache(
     placementKey: string,
     customerId: string
-  ): Promise<{ data: PlacementResolution; fetchedAt: number } | null> {
+  ): Promise<PlacementCacheEntry | null> {
     const map = await this.readPlacementMap();
     const entry = map[placementKey];
     if (!entry) return null;
@@ -1913,40 +2118,74 @@ export class RevnixClient {
     return entry;
   }
 
-  private async writePlacementCache(
+  private writePlacementCache(
     placementKey: string,
     data: PlacementResolution,
-    customerId: string
+    customerId: string,
+    fetchedAt: number
   ): Promise<void> {
+    return this.mutatePlacements((map) => {
+      map[placementKey] = { data, fetchedAt, customerId };
+    });
+  }
+
+  private deletePlacementCache(placementKey: string): Promise<void> {
+    return this.mutatePlacements((map) => {
+      delete map[placementKey];
+    });
+  }
+
+  private mutatePlacements(
+    mutate: (map: Record<string, PlacementCacheEntry>) => void
+  ): Promise<void> {
+    return this.withStorageLock(async () => {
+      try {
+        const map = await this.readPlacementMap();
+        mutate(map);
+        await this.storage.setItem(PLACEMENTS_CACHE_KEY, JSON.stringify(map));
+      } catch (err) {
+        this.diag("storageWrite", err);
+      }
+    });
+  }
+
+  private async placementsInvalidatedAt(): Promise<number> {
     try {
-      const map = await this.readPlacementMap();
-      map[placementKey] = { data, fetchedAt: Date.now(), customerId };
-      await this.storage.setItem(PLACEMENTS_CACHE_KEY, JSON.stringify(map));
+      return Number(await this.storage.getItem(PLACEMENTS_INVALIDATED_AT_KEY)) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private async invalidatePlacements(): Promise<void> {
+    try {
+      await this.storage.setItem(PLACEMENTS_INVALIDATED_AT_KEY, String(Date.now()));
     } catch (err) {
-      // Best-effort, but reported (REV-200 M26).
       this.diag("storageWrite", err);
     }
   }
 
   // ——— C7: persisted purchase retry queue ———
 
-  // Serializes every queue read-modify-write. Storage adapters may be async,
-  // so two interleaved mutations (an enqueue during the retry pass, retry
-  // passes from constructor + a manual call) would otherwise clobber each
-  // other's writes and lose purchases.
-  private queueLock: Promise<void> = Promise.resolve();
+  private storageLock: Promise<void> = Promise.resolve();
+
+  private withStorageLock<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.storageLock.then(task);
+    this.storageLock = run.then(
+      () => {},
+      () => {}
+    );
+    return run;
+  }
 
   private mutateQueue(
     mutate: (queue: PendingPurchase[]) => PendingPurchase[]
   ): Promise<void> {
-    const run = this.queueLock.then(async () => {
+    return this.withStorageLock(async () => {
       const queue = await this.readPurchaseQueue();
       const next = mutate(queue);
       if (next !== queue) await this.writePurchaseQueue(next);
     });
-    // The chain must survive a failed mutation or every later one deadlocks.
-    this.queueLock = run.catch(() => {});
-    return run;
   }
 
   private async readPurchaseQueue(): Promise<PendingPurchase[]> {
@@ -1974,26 +2213,29 @@ export class RevnixClient {
     customerId: string,
     input: RegisterPurchaseInput
   ): Promise<void> {
-    // Repeated failures of the same purchase collapse to one queued entry.
-    return this.mutateQueue((queue) =>
-      queue.some((q) => pendingKey(q.input) === pendingKey(input))
-        ? queue
-        : [...queue, { customerId, input }]
-    );
+    return this.mutateQueue((queue) => {
+      if (queue.some((q) => pendingKey(q.input) === pendingKey(input))) return queue;
+      const kept = queue.slice(Math.max(0, queue.length - PURCHASE_QUEUE_CAP + 1));
+      for (const dropped of queue.slice(0, queue.length - kept.length)) {
+        this.diag("registerPurchase", new Error(`queue full, dropped ${pendingKey(dropped.input)}`));
+      }
+      return [...kept, { customerId, input, queuedAt: Date.now() }];
+    });
   }
 
   private async request<T>(
     method: "GET" | "POST",
     path: string,
     body?: unknown,
-    extraHeaders?: Record<string, string>
+    extraHeaders?: Record<string, string>,
+    timeoutMs = this.requestTimeoutMs
   ): Promise<T> {
     // C7: abort the request after requestTimeoutMs so a slow or dead backend
     // can't hang the app. AbortController is guarded for very old runtimes.
     const controller =
       typeof AbortController !== "undefined" ? new AbortController() : undefined;
     const timer = controller
-      ? setTimeout(() => controller.abort(), this.requestTimeoutMs)
+      ? setTimeout(() => controller.abort(), timeoutMs)
       : undefined;
 
     // REV-200 (M26): piggyback the background-failure counter on this
@@ -2025,7 +2267,7 @@ export class RevnixClient {
         (err instanceof Error && err.name === "AbortError")
       ) {
         throw new RevnixTimeoutError(
-          `Revnix request to ${path} timed out after ${this.requestTimeoutMs}ms`
+          `Revnix request to ${path} timed out after ${timeoutMs}ms`
         );
       }
       throw new RevnixNetworkError(

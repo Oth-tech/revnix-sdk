@@ -1,4 +1,4 @@
-import { describe, expect, jest, test } from "@jest/globals";
+import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import { RevnixClient } from "./client.js";
 import { PurchaseBlockedError, RevnixError } from "./errors.js";
 import { purchaseInputFromIap } from "./iap.js";
@@ -573,11 +573,8 @@ describe("logAdRevenue", () => {
 });
 
 describe("track", () => {
-  test("posts event, properties and a fresh eventId", async () => {
-    const fetchImpl = mockFetch({
-      status: 201,
-      body: { eventId: "evt1", seq: 1, duplicate: false },
-    });
+  test("posts event, properties and a fresh eventId in a batch", async () => {
+    const fetchImpl = mockFetch({ body: { results: [{ status: 201 }] } });
     const client = new RevnixClient({
       ...CONFIG,
       fetch: fetchImpl,
@@ -585,19 +582,22 @@ describe("track", () => {
     });
     const id = await client.getCustomerId();
 
-    client.track("level_up", { level: 5, difficulty: "hard" });
-    await new Promise((r) => setTimeout(r, 0));
+    await client.track("level_up", { level: 5, difficulty: "hard" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await client.flushEvents();
 
     const call = lastCall(fetchImpl);
     expect(call.url).toBe("https://demo.convex.site/v1/events");
     expect(call.method).toBe("POST");
-    expect(call.body).toMatchObject({
+    expect(call.body.events).toHaveLength(1);
+    expect(call.body.events[0]).toMatchObject({
       customerId: id,
       event: "level_up",
       properties: { level: 5, difficulty: "hard" },
     });
-    expect(call.body.eventId).toEqual(expect.any(String));
-    expect(call.body.eventId.length).toBeGreaterThan(0);
+    expect(call.body.events[0].eventId).toEqual(expect.any(String));
+    expect(call.body.events[0].eventId.length).toBeGreaterThan(0);
+    client.dispose();
   });
 
   test("an invalid event name sends nothing", async () => {
@@ -613,6 +613,260 @@ describe("track", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("event queue", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  const batchOk = (...statuses: number[]) =>
+    new Response(JSON.stringify({ results: statuses.map((status) => ({ status })) }));
+
+  async function queued(storage: RevnixStorage): Promise<Array<{ path: string; body: Record<string, unknown> }>> {
+    return JSON.parse((await storage.getItem("revnix.eventQueue")) ?? "[]");
+  }
+
+  function sentEvents(fetchImpl: FetchMock, path = "/v1/events") {
+    return fetchImpl.mock.calls
+      .filter(([url]) => String(url).endsWith(path))
+      .map(([, init]) => JSON.parse(String(init?.body)).events as Array<Record<string, unknown>>);
+  }
+
+  async function waitFor(condition: () => boolean | Promise<boolean>) {
+    for (let i = 0; i < 100 && !(await condition()); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(await condition()).toBe(true);
+  }
+
+  function makeClient(fetchImpl: FetchMock, storage = memoryStorage(), extra = {}) {
+    return new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-ev",
+      reportInstalls: false,
+      fetch: fetchImpl,
+      ...extra,
+    });
+  }
+
+  test("three tracks flush as one batch POST", async () => {
+    const storage = memoryStorage();
+    const fetchImpl = jest.fn<typeof fetch>().mockResolvedValue(batchOk(201, 201, 201));
+    const client = makeClient(fetchImpl, storage);
+    for (const name of ["a", "b", "c"]) await client.track(name);
+    expect(await queued(storage)).toHaveLength(3);
+
+    await client.flushEvents();
+
+    expect(sentEvents(fetchImpl).map((batch) => batch.map((e) => e.event))).toEqual([
+      ["a", "b", "c"],
+    ]);
+    expect(await queued(storage)).toEqual([]);
+    client.dispose();
+  });
+
+  test("paywall events queue with eventId = viewId and occurredAt, on their own route", async () => {
+    const fetchImpl = jest.fn<typeof fetch>().mockResolvedValue(batchOk(201));
+    const client = makeClient(fetchImpl);
+    await client.logPaywallEvent("restore", "view_1", { placementKey: "main" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    await client.flushEvents();
+
+    const [batch] = sentEvents(fetchImpl, "/v1/paywalls/events");
+    expect(batch).toEqual([
+      expect.objectContaining({
+        event: "restore",
+        viewId: "view_1",
+        eventId: "view_1",
+        placementKey: "main",
+        occurredAt: expect.any(Number),
+      }),
+    ]);
+    expect(sentEvents(fetchImpl)).toHaveLength(0);
+    client.dispose();
+  });
+
+  test("a retryable failure keeps the events; the next flush after the 30 s hold delivers", async () => {
+    let now = 1_700_000_000_000;
+    jest.spyOn(Date, "now").mockImplementation(() => now);
+    const storage = memoryStorage();
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "down" }), { status: 503 }))
+      .mockResolvedValue(batchOk(201, 201));
+    const client = makeClient(fetchImpl, storage);
+    await client.track("a");
+    await client.track("b");
+
+    await client.flushEvents();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(await queued(storage)).toHaveLength(2);
+
+    await client.flushEvents();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    now += 31_000;
+    await client.flushEvents();
+    expect(sentEvents(fetchImpl)[1]?.map((e) => e.event)).toEqual(["a", "b"]);
+    expect(await queued(storage)).toEqual([]);
+    client.dispose();
+  });
+
+  test("a non-JSON or ill-shaped 200 keeps the events", async () => {
+    let now = 1_700_000_000_000;
+    jest.spyOn(Date, "now").mockImplementation(() => now);
+    const storage = memoryStorage();
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("<html>login</html>"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true })));
+    const client = makeClient(fetchImpl, storage);
+    await client.track("a");
+
+    await client.flushEvents();
+    expect(await queued(storage)).toHaveLength(1);
+    now += 31_000;
+    await client.flushEvents();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(await queued(storage)).toHaveLength(1);
+    client.dispose();
+  });
+
+  test("a flush triggered inside the hold runs when the hold ends", async () => {
+    let now = 1_700_000_000_000;
+    jest.spyOn(Date, "now").mockImplementation(() => now);
+    const storage = memoryStorage();
+    await storage.setItem(
+      "revnix.eventQueue",
+      JSON.stringify([{ path: "/v1/events", body: { eventId: "e0", event: "seed" } }])
+    );
+    const diagnostics: string[] = [];
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "down" }), { status: 503 }))
+      .mockResolvedValue(batchOk(201));
+    const client = makeClient(fetchImpl, storage, {
+      onDiagnostic: (d: { op: string }) => diagnostics.push(d.op),
+    });
+    await waitFor(() => diagnostics.includes("eventQueue"));
+
+    now += 30_000 - 40;
+    await client.flushEvents();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    now += 1000;
+
+    await waitFor(async () => (await queued(storage)).length === 0);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    client.dispose();
+  });
+
+  test("a rejected item is dropped with a diagnostic and the rest are removed", async () => {
+    const storage = memoryStorage();
+    const diagnostics: Array<{ op: string; error: unknown }> = [];
+    const fetchImpl = jest.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          results: [{ status: 201 }, { status: 400, error: "bad properties" }, { status: 200 }],
+        })
+      )
+    );
+    const client = makeClient(fetchImpl, storage, {
+      onDiagnostic: (d: { op: string; error: unknown }) => diagnostics.push(d),
+    });
+    for (const name of ["a", "b", "c"]) await client.track(name, undefined, { eventId: `id_${name}` });
+
+    await client.flushEvents();
+
+    expect(await queued(storage)).toEqual([]);
+    const dropped = diagnostics.filter((d) => d.op === "eventQueue");
+    expect(dropped).toHaveLength(1);
+    expect(String((dropped[0]?.error as Error).message)).toContain("id_b");
+    expect(String((dropped[0]?.error as Error).message)).toContain("400 bad properties");
+    client.dispose();
+  });
+
+  test("an event queued mid-flush survives the flush", async () => {
+    const storage = memoryStorage();
+    let respond!: (r: Response) => void;
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockReturnValueOnce(new Promise<Response>((r) => (respond = r)));
+    const client = makeClient(fetchImpl, storage);
+    await client.track("first");
+    const flushed = client.flushEvents();
+    await waitFor(() => fetchImpl.mock.calls.length === 1);
+
+    await client.track("late");
+    respond(batchOk(201));
+    await flushed;
+
+    expect((await queued(storage)).map((e) => e.body.event)).toEqual(["late"]);
+    client.dispose();
+  });
+
+  test("a full queue drops the oldest event", async () => {
+    const storage = memoryStorage();
+    await storage.setItem(
+      "revnix.eventQueue",
+      JSON.stringify(
+        Array.from({ length: 1000 }, (_, i) => ({
+          path: "/v1/events",
+          body: { eventId: `e${i}`, event: "seed" },
+        }))
+      )
+    );
+    const diagnostics: string[] = [];
+    const fetchImpl = jest.fn<typeof fetch>().mockRejectedValue(new Error("offline"));
+    const client = makeClient(fetchImpl, storage, {
+      onDiagnostic: (d: { error: unknown }) => diagnostics.push(String((d.error as Error).message)),
+    });
+
+    await client.track("newest");
+
+    const events = await queued(storage);
+    expect(events).toHaveLength(1000);
+    expect(events[0]?.body.eventId).toBe("e1");
+    expect(events[999]?.body.event).toBe("newest");
+    expect(diagnostics.some((m) => m.includes("queue full"))).toBe(true);
+    client.dispose();
+  });
+
+  test("events left from a previous launch flush once after construction", async () => {
+    const storage = memoryStorage();
+    await storage.setItem(
+      "revnix.eventQueue",
+      JSON.stringify([{ path: "/v1/events", body: { eventId: "e0", event: "seed" } }])
+    );
+    const fetchImpl = jest.fn<typeof fetch>().mockResolvedValue(batchOk(201));
+    const client = makeClient(fetchImpl, storage);
+
+    await waitFor(async () => (await queued(storage)).length === 0);
+    expect(sentEvents(fetchImpl)).toEqual([[{ eventId: "e0", event: "seed" }]]);
+    client.dispose();
+  });
+
+  test("going to the background flushes", async () => {
+    let handler: ((state: "foreground" | "background") => void) | undefined;
+    const fetchImpl = jest.fn<typeof fetch>().mockResolvedValue(batchOk(201));
+    const client = makeClient(fetchImpl, memoryStorage(), {
+      lifecycle: {
+        onStateChange: (h: typeof handler) => {
+          handler = h;
+          return () => {};
+        },
+      },
+    });
+    await client.track("a");
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    handler?.("background");
+
+    await waitFor(() => sentEvents(fetchImpl).length === 1);
+    client.dispose();
   });
 });
 

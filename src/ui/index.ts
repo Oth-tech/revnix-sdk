@@ -2,6 +2,7 @@ export {
   RevnixPaywall,
   DEFAULT_PAYWALL_THEME,
   LIGHT_PAYWALL_THEME,
+  prefetchPaywallImages,
   type RevnixPaywallPackage,
   type RevnixPaywallProps,
   type RevnixPaywallTheme,

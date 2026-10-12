@@ -316,6 +316,10 @@ describe("REV-198 cache fallback discipline", () => {
       fetch: fetchImpl,
     });
     await client.resolvePlacement("main"); // cached
+    await client.resolvePlacement("main");
+    for (let i = 0; i < 50 && (await client.getCachedPlacement("main")); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
     await expect(client.resolvePlacement("main")).rejects.toMatchObject({
       status: 404,
     });
@@ -499,5 +503,102 @@ describe("REV-200 diagnostics", () => {
     await expect(client.getEntitlements()).rejects.toBeInstanceOf(
       RevnixNetworkError
     );
+  });
+});
+
+describe("runtime lag limits", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  function timeoutsSet(spy: jest.SpiedFunction<typeof setTimeout>) {
+    return spy.mock.calls.map(([, ms]) => ms);
+  }
+
+  test("entitlements with a cached snapshot use a 3 s timeout", async () => {
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockImplementation(async () => jsonResponse(ENT_BODY));
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage: memoryStorage(),
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: fetchImpl,
+      entitlementsTtlMs: 0,
+    });
+    const spy = jest.spyOn(globalThis, "setTimeout");
+    await client.getEntitlements();
+    expect(timeoutsSet(spy)).toContain(10_000);
+    spy.mockClear();
+    await client.getEntitlements();
+    expect(timeoutsSet(spy)).toContain(3_000);
+    expect(timeoutsSet(spy)).not.toContain(10_000);
+    spy.mockRestore();
+  });
+
+  test("the purchase queue keeps the newest 100", async () => {
+    const storage = memoryStorage();
+    const diagnostics: string[] = [];
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-p",
+      reportInstalls: false,
+      fetch: jest.fn<typeof fetch>().mockRejectedValue(new Error("offline")),
+      onDiagnostic: (d) => diagnostics.push(String((d.error as Error).message)),
+    });
+    for (let i = 0; i <= 100; i++) {
+      await client
+        .registerPurchase({
+          source: "apple",
+          token: `t${i}`,
+          productId: "pro.monthly",
+          transactionId: `x${i}`,
+        })
+        .catch(() => {});
+    }
+    const queue = JSON.parse((await storage.getItem("revnix.pendingPurchases")) as string);
+    expect(queue).toHaveLength(100);
+    expect(queue[0].input.token).toBe("t1");
+    expect(queue[99].input.token).toBe("t100");
+    expect(queue[99].queuedAt).toEqual(expect.any(Number));
+    expect(diagnostics).toContain("queue full, dropped apple:t0:x0");
+  });
+
+  test("queued purchases older than 30 days are dropped; unstamped ones count as new", async () => {
+    let now = 1_700_000_000_000;
+    const spy = jest.spyOn(Date, "now").mockImplementation(() => now);
+    const storage = memoryStorage();
+    const item = (token: string, queuedAt?: number) => ({
+      customerId: "cust-p",
+      input: { source: "apple", token, productId: "p", transactionId: token },
+      ...(queuedAt === undefined ? {} : { queuedAt }),
+    });
+    await storage.setItem(
+      "revnix.pendingPurchases",
+      JSON.stringify([item("old", now - 31 * DAY), item("recent", now - DAY), item("legacy")])
+    );
+    const diagnostics: string[] = [];
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-p",
+      reportInstalls: false,
+      fetch: jest.fn<typeof fetch>().mockRejectedValue(new Error("offline")),
+      onDiagnostic: (d) => diagnostics.push(String((d.error as Error).message)),
+    });
+
+    await client.retryPendingPurchases();
+    const queue = JSON.parse((await storage.getItem("revnix.pendingPurchases")) as string);
+    expect(queue.map((q: { input: { token: string } }) => q.input.token)).toEqual([
+      "recent",
+      "legacy",
+    ]);
+    expect(queue[1].queuedAt).toBe(now);
+    expect(diagnostics).toContain("expired apple:old:old");
+
+    now += 31 * DAY;
+    await client.retryPendingPurchases();
+    expect(JSON.parse((await storage.getItem("revnix.pendingPurchases")) as string)).toEqual([]);
+    spy.mockRestore();
   });
 });

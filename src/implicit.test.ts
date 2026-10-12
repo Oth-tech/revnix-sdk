@@ -429,6 +429,7 @@ describe("the loop guard", () => {
     expect(triggersIn(calls).map((c) => c.body?.placement)).toEqual([
       "transaction_abandon",
     ]);
+    client.dispose();
   });
 
   test("abandoning checkout and THEN dismissing an implicit paywall fires neither", async () => {
@@ -453,6 +454,7 @@ describe("the loop guard", () => {
     await settle();
 
     expect(triggersIn(calls)).toHaveLength(0);
+    client.dispose();
   });
 
   test("a double-tapped close is still guarded — the guard is never released", async () => {
