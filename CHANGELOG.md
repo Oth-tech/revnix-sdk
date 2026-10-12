@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.6.0 (2026-10-12)
+
 ### Added
 
 - **`flushEvents()`**: send every queued `track` and paywall interaction
