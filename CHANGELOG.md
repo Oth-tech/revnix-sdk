@@ -2,11 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Paywall blocks: `timer` (countdown to a date or from when the paywall opens), `video` (drawn as its poster; React Native has no built-in player), `toggle` (free-trial switch that flips the selected package) and the card `carousel` layout (swipeable pages with dots and optional auto-advance).
+
 ## 1.6.0 (2026-10-12)
 
 ### Added
 
-- Paywall blocks: `timer` (countdown to a date or from when the paywall opens), `video` (drawn as its poster; React Native has no built-in player), `toggle` (free-trial switch that flips the selected package) and the card `carousel` layout (swipeable pages with dots and optional auto-advance).
 - **`flushEvents()`**: send every queued `track` and paywall interaction
   event now.
 - **`preload(placementKeys)`**: fetch placements ahead of time so the next
