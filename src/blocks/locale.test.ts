@@ -117,6 +117,30 @@ describe("applying a language", () => {
   });
 });
 
+test("timer format/expiredText and toggle label are translatable", () => {
+  const out = localizeBlockDoc(
+    doc({
+      blocks: [
+        { id: "t1", type: "timer", duration: 600, format: "Ends in {mm}:{ss}", expiredText: "Expired" },
+        { id: "t2", type: "timer", duration: 60 },
+        { id: "g1", type: "toggle", label: "Free trial", onPackageIndex: 0, offPackageIndex: 1 },
+      ],
+      locales: {
+        es: {
+          "t1.format": "Termina en {mm}:{ss}",
+          "t1.expiredText": "Expirado",
+          "t2.format": "{ss}s",
+          "g1.label": "Prueba gratis",
+        },
+      },
+    }),
+    "es",
+  );
+  expect(at(out.blocks, 0)).toMatchObject({ format: "Termina en {mm}:{ss}", expiredText: "Expirado" });
+  expect(at(out.blocks, 1)).toMatchObject({ format: undefined });
+  expect(at(out.blocks, 2)).toMatchObject({ label: "Prueba gratis" });
+});
+
 describe("linkLabels", () => {
   test("resolves a language and its regional variants", () => {
     expect(linkLabels("ur")).toEqual({
