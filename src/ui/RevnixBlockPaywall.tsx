@@ -26,6 +26,7 @@ import {
   Pressable,
   ScrollView,
   StatusBar,
+  Switch,
   Text,
   View,
   type ColorValue,
@@ -60,13 +61,14 @@ import {
   type ResolvedBackgroundImage,
 } from "../blocks/background.js";
 import { detectLocale, linkLabels, localizeBlockDoc } from "../blocks/locale.js";
-import { resolveTags } from "../blocks/tags.js";
+import { resolveTags, timerText } from "../blocks/tags.js";
 import {
   canvasMetrics,
   effectiveStyle,
   isVisible,
   packageContext,
   selectedPackageId,
+  toggleSelection,
 } from "../blocks/selection.js";
 import type { SelectionContext } from "../blocks/selection.js";
 import {
@@ -76,6 +78,7 @@ import {
   type PaywallBlock,
   type PaywallBlockDoc,
   type ProductsBlock,
+  type TimerBlock,
 } from "../blocks/types.js";
 import type { RevnixPaywallPackage } from "./RevnixPaywall.js";
 
@@ -607,6 +610,7 @@ interface RenderContext {
   style: StyleContext;
   /** Host purchase in flight: purchase buttons disable and spin. */
   loading: boolean;
+  shownAt: number;
 }
 
 /** Text blocks always render inside a View: a style may carry both typography
@@ -667,6 +671,108 @@ function BlockText({
     );
   }
   return <View style={toViewStyle(style, styleCtx)}>{body}</View>;
+}
+
+function Timer({
+  block,
+  style,
+  ctx,
+  inherited,
+}: {
+  block: TimerBlock;
+  style: BlockStyle | undefined;
+  ctx: RenderContext;
+  inherited: InheritedText;
+}) {
+  const [now, setNow] = React.useState(Date.now);
+  React.useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const text = timerText(block, ctx.shownAt, now);
+  if (text === null) return null;
+  return <BlockText text={text} style={style} ctx={ctx} inherited={inherited} />;
+}
+
+function Carousel({
+  pages,
+  autoAdvance,
+  doc,
+}: {
+  pages: React.ReactNode[];
+  autoAdvance?: number;
+  doc: PaywallBlockDoc;
+}) {
+  const scroller = React.useRef<ScrollView>(null);
+  const [size, setSize] = React.useState({ width: 0, height: 0 });
+  const [page, setPage] = React.useState(0);
+  React.useEffect(() => {
+    if (!autoAdvance || size.width === 0 || pages.length < 2) return;
+    const id = setInterval(() => {
+      scroller.current?.scrollTo({
+        x: ((page + 1) % pages.length) * size.width,
+        animated: true,
+      });
+    }, autoAdvance * 1000);
+    return () => clearInterval(id);
+  }, [autoAdvance, size.width, page, pages.length]);
+  return (
+    <View
+      style={{ flex: 1 }}
+      onLayout={(e) =>
+        setSize({
+          width: e.nativeEvent.layout.width,
+          height: e.nativeEvent.layout.height,
+        })
+      }
+    >
+      <ScrollView
+        ref={scroller}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onScroll={(e) => {
+          if (size.width > 0) {
+            setPage(Math.round(e.nativeEvent.contentOffset.x / size.width));
+          }
+        }}
+      >
+        {pages.map((node, i) => (
+          <View key={i} style={size}>
+            {node}
+          </View>
+        ))}
+      </ScrollView>
+      {pages.length > 1 ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            bottom: 8,
+            left: 0,
+            right: 0,
+            flexDirection: "row",
+            justifyContent: "center",
+            gap: 6,
+          }}
+        >
+          {pages.map((_, i) => (
+            <View
+              key={i}
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: 3,
+                backgroundColor:
+                  i === page ? doc.accent : withAlpha(doc.textColor, 0.3),
+              }}
+            />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
 }
 
 /** The press handler for a block the design marks as the close, or undefined
@@ -844,6 +950,11 @@ function Block({
   selection?: SelectionContext;
 }): React.ReactElement | null {
   const { doc } = ctx;
+  React.useEffect(() => {
+    if (block.type === "video") {
+      ctx.onDiagnostic?.("video drawn as its poster: no built-in player");
+    }
+  }, [block.type]);
   const styleCtx = { ...ctx.style, fontSize: inherited.fontSize };
   // A pinned card judges its own context; every other block inherits the
   // nearest plan card's. (A repeat card is judged per instance below.)
@@ -876,9 +987,48 @@ function Block({
         />
       );
 
-    case "image": {
-      const url = block.url || ctx.heroImageUrl;
-      const round = block.shape === "circle";
+    case "timer":
+      return <Timer block={block} style={style} ctx={ctx} inherited={inherited} />;
+
+    case "toggle": {
+      const toggle = toggleSelection(block, ctx.packages, ctx.selectedId);
+      if (!toggle) return null;
+      const flip = () => ctx.onSelect(toggle.target);
+      return (
+        <Pressable
+          accessibilityRole="switch"
+          accessibilityState={{ checked: toggle.on }}
+          onPress={flip}
+          style={[{ flexDirection: "row", alignItems: "center", gap: 12 }, view]}
+        >
+          <BlockFill block={block} ctx={ctx} />
+          <Text
+            style={[
+              { flex: 1 },
+              inheritedTextStyle(text, ctx.style),
+              textOnly(style, styleCtx),
+            ]}
+          >
+            {resolveTags(
+              block.label,
+              ctx.packages.find((p) => p.packageId === ctx.selectedId),
+              ctx.packages
+            )}
+          </Text>
+          <Switch
+            value={toggle.on}
+            onValueChange={flip}
+            trackColor={{ true: doc.accent }}
+          />
+        </Pressable>
+      );
+    }
+
+    case "image":
+    case "video": {
+      const image = block.type === "image";
+      const url = image ? block.url || ctx.heroImageUrl : block.poster;
+      const round = image && block.shape === "circle";
       const s = style;
       // A converted design sizes its own slot; the 160pt default is only for
       // a slot dropped into a flow column, and must not fight it.
@@ -892,7 +1042,7 @@ function Block({
       // An icon the design marks as the close (REV-252). Same rule as text:
       // the whole box is the target, and the style lands on the Pressable so
       // a pinned icon keeps its offsets.
-      const closeImage = closePress(block, ctx);
+      const closeImage = image ? closePress(block, ctx) : undefined;
       const ImageBox = closeImage ? Pressable : View;
       return (
         <ImageBox
@@ -913,7 +1063,7 @@ function Block({
               resizeMode={block.fit ?? "cover"}
               style={{ width: "100%", height: "100%" }}
             />
-          ) : (
+          ) : image ? (
             <View
               style={{
                 width: "100%",
@@ -921,7 +1071,7 @@ function Block({
                 backgroundColor: withAlpha("#7d879b", 0.2),
               }}
             />
-          )}
+          ) : null}
         </ImageBox>
       );
     }
@@ -1101,21 +1251,24 @@ function Block({
 
     case "card": {
       const layout = block.layout ?? "column";
+      const carousel = layout === "carousel";
       const base: ViewStyle =
         layout === "stack"
           ? { position: "relative" }
-          : layout === "grid"
-            ? {
-                position: "relative",
-                flexDirection: "row",
-                flexWrap: "wrap",
-                gap: style?.gap ?? 10,
-              }
-            : {
-                position: "relative",
-                flexDirection: layout === "row" ? "row" : "column",
-                gap: style?.gap ?? 10,
-              };
+          : carousel
+            ? { position: "relative", overflow: "hidden" }
+            : layout === "grid"
+              ? {
+                  position: "relative",
+                  flexDirection: "row",
+                  flexWrap: "wrap",
+                  gap: style?.gap ?? 10,
+                }
+              : {
+                  position: "relative",
+                  flexDirection: layout === "row" ? "row" : "column",
+                  gap: style?.gap ?? 10,
+                };
 
       const tracks = layout === "grid" ? gridTracks(block) : null;
       const renderChildren = (
@@ -1202,6 +1355,9 @@ function Block({
         base,
         layout === "stack" ? null : { borderRadius: 16 },
         view,
+        carousel
+          ? { height: typeof style?.height === "number" ? style.height : 220 }
+          : null,
       ];
 
       const cardPackage =
@@ -1222,7 +1378,15 @@ function Block({
           radius={style?.radius ?? (layout === "stack" ? undefined : 16)}
           onPress={pinned ? () => ctx.onSelect(cardPackage!.packageId) : undefined}
         >
-          {renderChildren(cardPackage, context)}
+          {carousel ? (
+            <Carousel
+              pages={renderChildren(cardPackage, context)}
+              autoAdvance={block.autoAdvance}
+              doc={doc}
+            />
+          ) : (
+            renderChildren(cardPackage, context)
+          )}
         </CardBox>
       );
     }
@@ -1243,6 +1407,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
   const [internalSelected, setInternalSelected] = React.useState<
     string | undefined
   >(undefined);
+  const [shownAt] = React.useState(Date.now);
   // Contract §1: host → own tap → design highlight → first package, each
   // only when the offering carries it.
   const selectedId = selectedPackageId(
@@ -1292,6 +1457,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
     onDiagnostic: props.onDiagnostic,
     style: styleCtx,
     loading: props.loading === true,
+    shownAt,
   };
 
   const children = doc.blocks.map((block) => (

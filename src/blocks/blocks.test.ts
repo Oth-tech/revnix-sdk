@@ -14,9 +14,16 @@ import {
   toTextStyle,
   toViewStyle,
 } from "./style.js";
-import { resolveTags } from "./tags.js";
+import { formatCountdown, resolveTags, timerText } from "./tags.js";
+import { resolveBlocks, toggleSelection } from "./selection.js";
 import { hasCloseAction } from "./types.js";
-import type { PaywallBlock, PaywallBlockDoc, TextBlock } from "./types.js";
+import type {
+  PaywallBlock,
+  PaywallBlockDoc,
+  TextBlock,
+  TimerBlock,
+  ToggleBlock,
+} from "./types.js";
 import type { RevnixPaywallPackage } from "../ui/RevnixPaywall.js";
 
 // Designed paywalls: the SDK is the second interpreter of a document the
@@ -513,10 +520,104 @@ describe("hasCloseAction", () => {
     ).toBe(false);
   });
 
+  test("a close inside a carousel does not count", () => {
+    expect(
+      hasCloseAction([
+        {
+          id: "c",
+          type: "card",
+          layout: "carousel",
+          children: [{ id: "x", type: "text", text: "×", action: "close" }],
+        },
+      ])
+    ).toBe(false);
+  });
+
   test("an unknown action value leaves the block decorative", () => {
     // Forward compatibility runs both ways: a future action this SDK does not
     // know must not be mistaken for a close.
     const future = { id: "t", type: "text", text: "?", action: "purchase" } as unknown as PaywallBlock;
     expect(hasCloseAction([future])).toBe(false);
+  });
+});
+
+describe("timer", () => {
+  test("formats the contract examples", () => {
+    expect(formatCountdown("{hh}:{mm}:{ss}", 3725)).toBe("01:02:05");
+    expect(formatCountdown("{d}d {hh}:{mm}:{ss}", 90061)).toBe("1d 01:01:01");
+    expect(formatCountdown("{hh}:{mm}", 90061)).toBe("25:01");
+    expect(formatCountdown("{ss}/{ss}", 7)).toBe("07/07");
+    expect(formatCountdown("{mm}:{ss}", 5400)).toBe("90:00");
+    expect(formatCountdown("{mm}:{ss}", 7200)).toBe("120:00");
+    expect(formatCountdown("{ss}s", 125)).toBe("125s");
+    expect(formatCountdown("{d}d {mm}m", 90061)).toBe("1d 61m");
+  });
+
+  test("duration counts from first display, endsAt is a fixed deadline", () => {
+    const shown = Date.parse("2026-10-12T00:00:00Z");
+    const timer: TimerBlock = { id: "t", type: "timer", duration: 600, format: "{mm}:{ss}" };
+    expect(timerText(timer, shown, shown)).toBe("10:00");
+    expect(timerText(timer, shown, shown + 1500)).toBe("09:58");
+    const fixed: TimerBlock = { id: "f", type: "timer", endsAt: "2026-10-12T01:00:00Z" };
+    expect(timerText(fixed, 0, shown)).toBe("01:00:00");
+  });
+
+  test("at zero draws expiredText, or nothing without it", () => {
+    const shown = 1_000_000;
+    const timer: TimerBlock = { id: "t", type: "timer", duration: 5 };
+    expect(timerText(timer, shown, shown + 5000)).toBeNull();
+    expect(timerText({ ...timer, expiredText: "Offer expired" }, shown, shown + 9000)).toBe(
+      "Offer expired",
+    );
+    const broken: TimerBlock = { id: "b", type: "timer", endsAt: "soon", expiredText: "Over" };
+    expect(timerText(broken, shown, shown)).toBe("Over");
+  });
+});
+
+describe("toggle", () => {
+  const packages = [{ packageId: "trial" }, { packageId: "plain" }];
+  const toggle: ToggleBlock = {
+    id: "g",
+    type: "toggle",
+    label: "Free trial enabled",
+    onPackageIndex: 0,
+    offPackageIndex: 1,
+  };
+
+  test("is on while the trial package is selected and a tap flips it", () => {
+    expect(toggleSelection(toggle, packages, "trial")).toEqual({ on: true, target: "plain" });
+    expect(toggleSelection(toggle, packages, "plain")).toEqual({ on: false, target: "trial" });
+  });
+
+  test("is not drawn when the offering lacks either index", () => {
+    expect(toggleSelection({ ...toggle, offPackageIndex: 2 }, packages, "trial")).toBeNull();
+    expect(toggleSelection(toggle, [], undefined)).toBeNull();
+  });
+});
+
+describe("timer, video, toggle and carousel in a tree", () => {
+  test("parse and walk like any other block", () => {
+    const tree: PaywallBlockDoc = {
+      ...DOC,
+      blocks: [
+        { id: "t", type: "timer", duration: 60 },
+        { id: "v", type: "video", url: "https://cdn.example.com/a.mp4", fit: "contain" },
+        { id: "g", type: "toggle", label: "Trial", onPackageIndex: 0, offPackageIndex: 1 },
+        {
+          id: "c",
+          type: "card",
+          layout: "carousel",
+          autoAdvance: 4,
+          children: [
+            { id: "p1", type: "image", url: "https://cdn.example.com/1.jpg" },
+            { id: "p2", type: "text", text: "Page two" },
+          ],
+        },
+        { id: "x", type: "hologram" } as unknown as PaywallBlock,
+      ],
+    };
+    const walked = resolveBlocks(JSON.parse(JSON.stringify(tree)), [], undefined);
+    expect([...walked.keys()]).toEqual(["t", "v", "g", "c", "p1", "p2", "x"]);
+    expect(hasCloseAction(tree.blocks)).toBe(false);
   });
 });

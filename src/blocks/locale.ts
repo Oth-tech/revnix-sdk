@@ -125,7 +125,14 @@ function localizeBlock(
     case "text":
       return { ...block, text: at("text", block.text) };
     case "button":
+    case "toggle":
       return { ...block, label: at("label", block.label) };
+    case "timer":
+      return {
+        ...block,
+        format: opt("format", block.format),
+        expiredText: opt("expiredText", block.expiredText),
+      };
     case "list":
       return {
         ...block,

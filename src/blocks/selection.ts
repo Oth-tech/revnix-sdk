@@ -11,6 +11,7 @@ import type {
   CardBlock,
   PaywallBlock,
   PaywallBlockDoc,
+  ToggleBlock,
 } from "./types.js";
 import { DESIGN_CANVAS } from "./types.js";
 import { resolveTags } from "./tags.js";
@@ -31,6 +32,18 @@ export function selectedPackageId(
     if (id !== undefined && packages.some((p) => p.packageId === id)) return id;
   }
   return packages[0]?.packageId;
+}
+
+export function toggleSelection(
+  block: ToggleBlock,
+  packages: ReadonlyArray<{ packageId: string }>,
+  selectedId: string | undefined
+): { on: boolean; target: string } | null {
+  const on = packages[block.onPackageIndex];
+  const off = packages[block.offPackageIndex];
+  if (on === undefined || off === undefined) return null;
+  const isOn = on.packageId === selectedId;
+  return { on: isOn, target: (isOn ? off : on).packageId };
 }
 
 /** The context a package-bearing card opens for itself and its subtree. */

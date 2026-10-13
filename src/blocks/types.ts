@@ -257,13 +257,58 @@ export interface SpacerBlock {
   visibility?: BlockVisibility;
 }
 
+/** Countdown text. `endsAt` is one deadline for everyone; `duration` counts
+ *  from the moment this paywall view opened. At zero it draws `expiredText`,
+ *  or nothing when that is absent. Tokens in `format`: {d} {hh} {mm} {ss}. */
+export interface TimerBlock {
+  id: string;
+  type: "timer";
+  endsAt?: string;
+  duration?: number;
+  format?: string;
+  expiredText?: string;
+  style?: BlockStyle;
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
+}
+
+/** A muted looping clip. React Native has no built-in player, so this SDK
+ *  draws `poster` in its place, sized like an image block. */
+export interface VideoBlock {
+  id: string;
+  type: "video";
+  url: string;
+  poster?: string;
+  fit?: "cover" | "contain";
+  style?: BlockStyle;
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
+}
+
+/** The free-trial switch: ON while package `onPackageIndex` is selected, and
+ *  tapping it selects the other one. Hidden when the offering lacks either
+ *  index. */
+export interface ToggleBlock {
+  id: string;
+  type: "toggle";
+  label: string;
+  onPackageIndex: number;
+  offPackageIndex: number;
+  style?: BlockStyle;
+  selectedStyle?: BlockStyle;
+  visibility?: BlockVisibility;
+}
+
 /** The one container block. `layout` picks how children are placed: column /
  *  row are flex lines, `stack` layers them (children position with
- *  style.inset or the edge offsets), and `grid` is an N-column grid. */
+ *  style.inset or the edge offsets), `grid` is an N-column grid, and
+ *  `carousel` pages through its children one swipe at a time. */
 export interface CardBlock {
   id: string;
   type: "card";
-  layout?: "column" | "row" | "stack" | "grid";
+  layout?: "column" | "row" | "stack" | "grid" | "carousel";
+  /** carousel only: seconds per page before it moves on by itself. */
+  autoAdvance?: number;
   /** Renders this container once per package in the attached offering. Its
    *  subtree reads the package through tag variables. */
   repeat?: "packages";
@@ -292,6 +337,9 @@ export type PaywallBlock =
   | LinksBlock
   | LineBlock
   | SpacerBlock
+  | TimerBlock
+  | VideoBlock
+  | ToggleBlock
   | CardBlock;
 
 /** The published document: screen palette plus the block tree. */
@@ -345,6 +393,7 @@ export function hasCloseAction(blocks: PaywallBlock[]): boolean {
       : b.type === "card"
         ? b.repeat === undefined &&
           b.packageIndex === undefined &&
+          b.layout !== "carousel" &&
           hasCloseAction(b.children)
         : (b.type === "text" || b.type === "image" || b.type === "button") &&
           b.action === "close"

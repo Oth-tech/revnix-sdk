@@ -11,6 +11,7 @@
 // approximated — a wrong price must never reach a customer silently.
 
 import type { RevnixPaywallPackage } from "../ui/RevnixPaywall.js";
+import type { TimerBlock } from "./types.js";
 
 /** Renewal cycles, in months. Lifetime and one-time products have no cycle. */
 const MONTHS: Record<string, number | undefined> = {
@@ -122,4 +123,41 @@ export function resolveTags(
         return raw;
     }
   });
+}
+
+export function formatCountdown(format: string, remaining: number): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  let span = Infinity;
+  const part = (token: string, unit: number) => {
+    const value = Math.floor((remaining % span) / unit);
+    if (format.includes(token)) span = unit;
+    return value;
+  };
+  const days = part("{d}", 86400);
+  const hours = part("{hh}", 3600);
+  const minutes = part("{mm}", 60);
+  const seconds = part("{ss}", 1);
+  return format
+    .replace(/\{d\}/g, String(days))
+    .replace(/\{hh\}/g, pad(hours))
+    .replace(/\{mm\}/g, pad(minutes))
+    .replace(/\{ss\}/g, pad(seconds));
+}
+
+export function timerText(
+  block: TimerBlock,
+  shownAt: number,
+  now: number,
+): string | null {
+  const deadline =
+    block.endsAt !== undefined
+      ? Date.parse(block.endsAt)
+      : shownAt + (block.duration ?? 0) * 1000;
+  const remaining = Number.isNaN(deadline)
+    ? 0
+    : Math.max(0, Math.floor((deadline - now) / 1000));
+  if (remaining > 0) {
+    return formatCountdown(block.format ?? "{hh}:{mm}:{ss}", remaining);
+  }
+  return block.expiredText ?? null;
 }
