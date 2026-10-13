@@ -45,6 +45,7 @@ import type {
   IdentifyResult,
   IdentifyStrategy,
   IdentityInfo,
+  IntegrityEvidence,
   LastDeepLink,
   MmpAttribution,
   PaywallInteraction,
@@ -70,6 +71,7 @@ const LAST_PUSH_TOKEN_KEY = "revnix.lastPushToken";
 const EVENT_QUEUE_KEY = "revnix.eventQueue";
 const PLACEMENTS_INVALIDATED_AT_KEY = "revnix.placementsInvalidatedAt";
 const DEFAULT_TIMEOUT_MS = 10_000;
+const INTEGRITY_TIMEOUT_MS = 10_000;
 const EVENT_QUEUE_CAP = 1000;
 const EVENT_BATCH_SIZE = 100;
 const EVENT_FLUSH_THRESHOLD = 20;
@@ -200,6 +202,21 @@ const jittered = (ms: number) => ms * (0.8 + Math.random() * 0.4);
 // half a minute; long enough that gating five screens costs one request.
 const DEFAULT_ENTITLEMENTS_TTL_MS = 30_000;
 
+const fitsWithin = (value: unknown, max: number): value is string =>
+  typeof value === "string" && value.length > 0 && value.length <= max;
+
+function wellFormedIntegrity(evidence: unknown): IntegrityEvidence | undefined {
+  if (typeof evidence !== "object" || evidence === null) return undefined;
+  const { platform, keyId, attestation, token } = evidence as Record<string, unknown>;
+  if (platform === "ios" && fitsWithin(keyId, 128) && fitsWithin(attestation, 16_384)) {
+    return { platform, keyId, attestation };
+  }
+  if (platform === "android" && fitsWithin(token, 16_384)) {
+    return { platform, token };
+  }
+  return undefined;
+}
+
 export class RevnixClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -244,6 +261,11 @@ export class RevnixClient {
   private readonly onImplicitPaywall?: RevnixConfig["onImplicitPaywall"];
   private readonly onDeferredDeepLink?: RevnixConfig["onDeferredDeepLink"];
   private readonly onAttribution?: RevnixConfig["onAttribution"];
+  private readonly deviceIntegrity?: RevnixConfig["deviceIntegrity"];
+  private integrityRequest: {
+    customerId: string;
+    body: Promise<{ integrity?: IntegrityEvidence }>;
+  } | null = null;
   private deferredDeepLinkClaimed = false;
   private landingUrl: string | null = null;
   private lastDeepLinkWrite: Promise<void> = Promise.resolve();
@@ -316,6 +338,7 @@ export class RevnixClient {
     this.onDiagnostic = config.onDiagnostic;
     this.onDeferredDeepLink = config.onDeferredDeepLink;
     this.onAttribution = config.onAttribution;
+    this.deviceIntegrity = config.deviceIntegrity;
     this.readYourWritesDelaysMs =
       config.readYourWritesDelaysMs ?? [250, 500, 1000, 2000];
     this.customerIdPromise = this.loadCustomerId(config.customerId);
@@ -1247,6 +1270,7 @@ export class RevnixClient {
           ...(attribution.campaign ? { campaign: attribution.campaign } : {}),
           ...(attribution.adGroup ? { adGroup: attribution.adGroup } : {}),
           ...(attribution.creative ? { creative: attribution.creative } : {}),
+          ...(await this.integrityFor(customerId)),
         });
         await this.storage.setItem(LAST_ATTRIBUTION_KEY, payload);
       })
@@ -1519,13 +1543,14 @@ export class RevnixClient {
     // one-launch phantoms. Same guard, same reason, as triggerImplicit.
     if (this.ephemeralAnonId) return;
     void this.customerIdPromise
-      .then((customerId) =>
+      .then(async (customerId) =>
         this.request<InstallResponse>("POST", "/v1/installs", {
           customerId,
           occurredAt: Date.now(),
           sdkVersion: SDK_VERSION,
           installReferrer: referrer.slice(0, 1024),
           ...this.installMetadata,
+          ...(await this.integrityFor(customerId)),
         })
       )
       .then((body) => {
@@ -1560,13 +1585,14 @@ export class RevnixClient {
     if (this.disposed || token.trim().length === 0) return Promise.resolve(undefined);
     if (this.ephemeralAnonId) return Promise.resolve(undefined);
     return this.customerIdPromise
-      .then((customerId) =>
+      .then(async (customerId) =>
         this.request<InstallResponse>("POST", "/v1/installs", {
           customerId,
           occurredAt: Date.now(),
           sdkVersion: SDK_VERSION,
           attributionToken: token.slice(0, 2048),
           ...this.installMetadata,
+          ...(await this.integrityFor(customerId)),
         })
       )
       .then((body) => {
@@ -1921,17 +1947,54 @@ export class RevnixClient {
   /** Fire-and-forget install report (REV-093). Never blocks startup and
    *  never throws — the backend absorbs retries idempotently per id. */
   private reportInstall(customerId: string): void {
-    void this.request<InstallResponse>("POST", "/v1/installs", {
-      customerId,
-      occurredAt: Date.now(),
-      sdkVersion: SDK_VERSION,
-      ...this.installMetadata,
-    })
+    const occurredAt = Date.now();
+    void this.integrityFor(customerId)
+      .then((integrity) =>
+        this.request<InstallResponse>("POST", "/v1/installs", {
+          customerId,
+          occurredAt,
+          sdkVersion: SDK_VERSION,
+          ...this.installMetadata,
+          ...integrity,
+        })
+      )
       .then((body) => {
         if (!this.ephemeralAnonId) this.refreshAttribution();
         return this.deliverDeferredDeepLink(body.deferredDeepLink);
       })
       .catch((err) => this.diag("reportInstall", err));
+  }
+
+  private integrityFor(
+    customerId: string
+  ): Promise<{ integrity?: IntegrityEvidence }> {
+    const source = this.deviceIntegrity;
+    if (!source) return Promise.resolve({});
+    if (this.integrityRequest?.customerId !== customerId) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("device integrity timed out")),
+          INTEGRITY_TIMEOUT_MS
+        );
+      });
+      const body = Promise.race([
+        Promise.resolve().then(() => source(customerId)),
+        timeout,
+      ])
+        .then((evidence) => {
+          const integrity = wellFormedIntegrity(evidence);
+          if (!integrity) throw new Error("device integrity unavailable");
+          return { integrity };
+        })
+        .catch((err: unknown) => {
+          this.diag("deviceIntegrity", err);
+          return {};
+        })
+        .finally(() => clearTimeout(timer));
+      this.integrityRequest = { customerId, body };
+    }
+    return this.integrityRequest.body;
   }
 
   /** REV-268: assemble and encode the device facts once. Runtime-detected

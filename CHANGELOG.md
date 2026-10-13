@@ -4,6 +4,7 @@
 
 ### Added
 
+- **`deviceIntegrity`** config option and `nativeDeviceIntegrity` from `react-native-revnix/store`: attaches Apple App Attest / Google Play Integrity evidence to `POST /v1/installs` and `POST /v1/attribution`, once per customer, bounded to 10 s. Android adds `com.google.android.play:integrity:1.6.0`.
 - Paywall blocks: `timer` (countdown to a date or from when the paywall opens), `video` (drawn as its poster; React Native has no built-in player), `toggle` (free-trial switch that flips the selected package) and the card `carousel` layout (swipeable pages with dots and optional auto-advance).
 
 ## 1.6.0 (2026-10-12)

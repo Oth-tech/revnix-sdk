@@ -44,6 +44,7 @@ export type {
   IdentifyStrategy,
   IdentityInfo,
   ImplicitResolution,
+  IntegrityEvidence,
   LastDeepLink,
   MmpAttribution,
   MmpProvider,

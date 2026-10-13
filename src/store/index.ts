@@ -5,11 +5,13 @@ import {
   type StoreAdapter,
   type StoreTransaction,
 } from "../store.js";
+import type { IntegrityEvidence, RevnixConfig } from "../types.js";
 
 interface NativeRevnixStore {
   purchase(productId: string, customerId: string): Promise<StoreTransaction | null>;
   restore(): Promise<StoreTransaction[]>;
   finish(transactionId: string): Promise<void>;
+  deviceIntegrity?(customerId: string): Promise<IntegrityEvidence | null>;
 }
 
 const native: NativeRevnixStore | undefined = NativeModules.RevnixStore;
@@ -40,5 +42,12 @@ export const RevnixStore: StoreAdapter = native
       finish: missing,
       observe: () => () => {},
     };
+
+/** Pass as `deviceIntegrity` in the Revnix config: App Attest on iOS, Play
+ *  Integrity on Android, via the RevnixStore native module. Resolves null
+ *  where the device or build cannot produce evidence. */
+export const nativeDeviceIntegrity: NonNullable<RevnixConfig["deviceIntegrity"]> = (
+  customerId
+) => native?.deviceIntegrity?.(customerId) ?? Promise.resolve(null);
 
 if (native) setStoreAdapter(RevnixStore);
