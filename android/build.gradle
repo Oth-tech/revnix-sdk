@@ -31,4 +31,5 @@ repositories {
 dependencies {
   implementation "com.facebook.react:react-native:+"
   implementation "com.android.billingclient:billing:8.3.0"
+  implementation "com.google.android.play:integrity:1.6.0"
 }

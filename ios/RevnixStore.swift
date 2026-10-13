@@ -1,3 +1,5 @@
+import CryptoKit
+import DeviceCheck
 import Foundation
 import React
 import StoreKit
@@ -85,6 +87,33 @@ class RevnixStore: RCTEventEmitter {
         }
       }
       resolve(nil)
+    }
+  }
+
+  @objc(deviceIntegrity:resolver:rejecter:)
+  func deviceIntegrity(
+    _ customerId: String,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    let service = DCAppAttestService.shared
+    guard service.isSupported else {
+      resolve(nil)
+      return
+    }
+    Task {
+      do {
+        let keyId = try await service.generateKey()
+        let clientDataHash = Data(SHA256.hash(data: Data(customerId.utf8)))
+        let attestation = try await service.attestKey(keyId, clientDataHash: clientDataHash)
+        resolve([
+          "platform": "ios",
+          "keyId": keyId,
+          "attestation": attestation.base64EncodedString(),
+        ])
+      } catch {
+        resolve(nil)
+      }
     }
   }
 

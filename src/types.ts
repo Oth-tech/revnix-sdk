@@ -139,7 +139,29 @@ export interface RevnixConfig {
    *  Never throws into your app: an exception from this handler is reported
    *  through `onDiagnostic` and swallowed. */
   onAttribution?: (attribution: RevnixAttribution) => void;
+  /** Opt-in device integrity evidence (Apple App Attest / Google Play
+   *  Integrity) attached to every install report and `setAttribution` call.
+   *  Pair it with the dashboard's "Require device integrity" setting, which
+   *  strips attribution from installs that arrive without evidence. In React
+   *  Native pass `nativeDeviceIntegrity` from "react-native-revnix/store";
+   *  it needs iOS 14+ with App Attest, or Google Play services on Android.
+   *  Simulators and emulators return nothing.
+   *
+   *  Called at most once per customer id and bounded to 10s. A rejection,
+   *  timeout, or missing/malformed result sends the request without
+   *  evidence and reports `op: "deviceIntegrity"` through `onDiagnostic`. */
+  deviceIntegrity?: (
+    customerId: string
+  ) => Promise<IntegrityEvidence | null | undefined>;
 }
+
+/** Device integrity evidence for `POST /v1/installs` and `/v1/attribution`.
+ *  iOS: an App Attest key id and its attestation (standard base64) over
+ *  SHA-256 of the customer id. Android: a classic Play Integrity token whose
+ *  nonce is base64url (no padding) of SHA-256 of the customer id. */
+export type IntegrityEvidence =
+  | { platform: "ios"; keyId: string; attestation: string }
+  | { platform: "android"; token: string };
 
 /** AT11: the install-attribution verdict — GET
  *  /v1/customers/{id}/attribution. `installMatch: "unknown"` (no install

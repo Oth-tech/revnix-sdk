@@ -1,5 +1,6 @@
 package com.revnix.reactnative
 
+import android.util.Base64
 import android.util.Log
 import com.android.billingclient.api.AcknowledgePurchaseParams
 import com.android.billingclient.api.BillingClient
@@ -21,6 +22,9 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.google.android.play.core.integrity.IntegrityManagerFactory
+import com.google.android.play.core.integrity.IntegrityTokenRequest
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
@@ -112,6 +116,30 @@ class RevnixStoreModule(context: ReactApplicationContext) :
           promise.reject("store_error", "acknowledgePurchase failed: ${result.responseCode} ${result.debugMessage}")
         }
       }
+    }
+  }
+
+  @ReactMethod
+  fun deviceIntegrity(customerId: String, promise: Promise) {
+    val nonce = Base64.encodeToString(
+      MessageDigest.getInstance("SHA-256").digest(customerId.toByteArray(Charsets.UTF_8)),
+      Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP,
+    )
+    try {
+      IntegrityManagerFactory.create(reactApplicationContext.applicationContext)
+        .requestIntegrityToken(IntegrityTokenRequest.builder().setNonce(nonce).build())
+        .addOnSuccessListener { response ->
+          promise.resolve(
+            Arguments.createMap().apply {
+              putString("platform", "android")
+              putString("token", response.token())
+            },
+          )
+        }
+        .addOnFailureListener { promise.resolve(null) }
+        .addOnCanceledListener { promise.resolve(null) }
+    } catch (err: Exception) {
+      promise.resolve(null)
     }
   }
 

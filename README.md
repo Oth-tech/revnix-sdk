@@ -145,6 +145,22 @@ Learn more in [A/B tests](https://www.revnix.io/docs/ab-tests).
 - **MMP forwarding** to AppsFlyer and Adjust, **ad revenue** logging and **uninstall measurement**. See [MMP attribution](https://www.revnix.io/docs/mmp-attribution), [Ad revenue](https://www.revnix.io/docs/ad-revenue) and [Uninstall measurement](https://www.revnix.io/docs/uninstall-measurement).
 - **Fraud prevention**: anonymous-IP and click-injection checks keep paid channels honest. See [Fraud prevention](https://www.revnix.io/docs/fraud-prevention).
 
+### Device integrity
+
+Pass `nativeDeviceIntegrity` so install reports carry Apple App Attest or Google Play Integrity evidence. With "Require device integrity" on in the dashboard, installs without it lose their attribution.
+
+```ts
+import { nativeDeviceIntegrity } from "react-native-revnix/store";
+
+Revnix.configure({
+  apiKey: "rvx_pk_live_…",
+  baseUrl: "https://<your-deployment>.convex.site",
+  deviceIntegrity: nativeDeviceIntegrity,
+});
+```
+
+It runs once per customer, waits at most 10 seconds and never blocks the report. Needs App Attest on iOS or Google Play services on Android; simulators and emulators send no evidence.
+
 ## Real-time analytics for your React Native app
 
 ![Revnix overview: active subscriptions, revenue and MRR over 90 days](https://www.revnix.io/sdk/react-native/analytics.png)
