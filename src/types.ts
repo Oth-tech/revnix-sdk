@@ -153,6 +153,14 @@ export interface RevnixConfig {
   deviceIntegrity?: (
     customerId: string
   ) => Promise<IntegrityEvidence | null | undefined>;
+  /** Google Advertising ID source, stored on the customer as `gps_adid` at
+   *  launch and resent only when it changes. In React Native pass
+   *  `nativeAdvertisingId` from "react-native-revnix/store"; it needs
+   *  `play-services-ads-identifier` and the `AD_ID` permission in the app and
+   *  answers null on iOS and on opt-out, and rejects when the id cannot be
+   *  read. A null answer deletes a previously stored `gps_adid`; a
+   *  rejection changes nothing and reports `op: "advertisingId"`. */
+  advertisingId?: () => Promise<string | null | undefined>;
 }
 
 /** Device integrity evidence for `POST /v1/installs` and `/v1/attribution`.

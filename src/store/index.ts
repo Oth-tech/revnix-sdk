@@ -12,6 +12,7 @@ interface NativeRevnixStore {
   restore(): Promise<StoreTransaction[]>;
   finish(transactionId: string): Promise<void>;
   deviceIntegrity?(customerId: string): Promise<IntegrityEvidence | null>;
+  advertisingId?(): Promise<string | null>;
 }
 
 const native: NativeRevnixStore | undefined = NativeModules.RevnixStore;
@@ -49,5 +50,10 @@ export const RevnixStore: StoreAdapter = native
 export const nativeDeviceIntegrity: NonNullable<RevnixConfig["deviceIntegrity"]> = (
   customerId
 ) => native?.deviceIntegrity?.(customerId) ?? Promise.resolve(null);
+
+/** Pass as `advertisingId` in the Revnix config: the Google Advertising ID
+ *  on Android, via the RevnixStore native module. Resolves null on iOS. */
+export const nativeAdvertisingId: NonNullable<RevnixConfig["advertisingId"]> = () =>
+  native?.advertisingId?.() ?? Promise.resolve(null);
 
 if (native) setStoreAdapter(RevnixStore);

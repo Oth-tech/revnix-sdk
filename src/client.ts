@@ -68,6 +68,7 @@ const PENDING_PURCHASES_KEY = "revnix.pendingPurchases";
 const PLACEMENTS_CACHE_KEY = "revnix.placements";
 const LAST_ATTRIBUTION_KEY = "revnix.lastAttribution";
 const LAST_PUSH_TOKEN_KEY = "revnix.lastPushToken";
+const LAST_AD_ID_KEY = "revnix.lastAdId";
 const EVENT_QUEUE_KEY = "revnix.eventQueue";
 const PLACEMENTS_INVALIDATED_AT_KEY = "revnix.placementsInvalidatedAt";
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -347,6 +348,7 @@ export class RevnixClient {
     void this.retryPendingPurchases().catch((err) =>
       this.diag("retryPendingPurchases", err)
     );
+    if (config.advertisingId) this.reportAdvertisingId(config.advertisingId);
     const store = getStoreAdapter();
     if (store) {
       this.stopStoreObserver = store.observe((tx) =>
@@ -1305,6 +1307,23 @@ export class RevnixClient {
         await this.storage.setItem(LAST_PUSH_TOKEN_KEY, payload);
       })
       .catch((err) => this.diag("setPushToken", err));
+  }
+
+  private reportAdvertisingId(
+    source: NonNullable<RevnixConfig["advertisingId"]>
+  ): void {
+    void Promise.resolve()
+      .then(source)
+      .then(async (value) => {
+        const id = value || null;
+        const customerId = await this.customerIdPromise;
+        const payload = JSON.stringify({ customerId, id });
+        const last = await this.storage.getItem(LAST_AD_ID_KEY);
+        if (last === payload || (id === null && last === null)) return;
+        await this.setAttributes({ gps_adid: id });
+        await this.storage.setItem(LAST_AD_ID_KEY, payload);
+      })
+      .catch((err) => this.diag("advertisingId", err));
   }
 
   /** REV-272: the two moments that happen ON a paywall, with the loop guard

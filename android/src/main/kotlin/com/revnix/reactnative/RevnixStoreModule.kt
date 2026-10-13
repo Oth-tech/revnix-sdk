@@ -22,6 +22,7 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.google.android.gms.ads.identifier.AdvertisingIdClient
 import com.google.android.play.core.integrity.IntegrityManagerFactory
 import com.google.android.play.core.integrity.IntegrityTokenRequest
 import java.security.MessageDigest
@@ -141,6 +142,20 @@ class RevnixStoreModule(context: ReactApplicationContext) :
     } catch (err: Exception) {
       promise.resolve(null)
     }
+  }
+
+  @ReactMethod
+  fun advertisingId(promise: Promise) {
+    Thread {
+      try {
+        val info = AdvertisingIdClient.getAdvertisingIdInfo(reactApplicationContext.applicationContext)
+        promise.resolve(
+          info.id.takeUnless { info.isLimitAdTrackingEnabled || it == "00000000-0000-0000-0000-000000000000" },
+        )
+      } catch (err: Throwable) {
+        promise.reject("advertising_id_unavailable", err.message, err)
+      }
+    }.start()
   }
 
   override fun onPurchasesUpdated(result: BillingResult, purchases: List<Purchase>?) {

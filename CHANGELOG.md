@@ -4,6 +4,7 @@
 
 ### Added
 
+- **`advertisingId`** config option and `nativeAdvertisingId` from `react-native-revnix/store`: stores the Google Advertising ID on the customer as `gps_adid` at launch, resent only when it changes and deleted after an opt-out. Android needs `com.google.android.gms:play-services-ads-identifier` and the `com.google.android.gms.permission.AD_ID` permission in the app; without them, or after an opt-out, nothing is stored.
 - **`deviceIntegrity`** config option and `nativeDeviceIntegrity` from `react-native-revnix/store`: attaches Apple App Attest / Google Play Integrity evidence to `POST /v1/installs` and `POST /v1/attribution`, once per customer, bounded to 10 s. Android adds `com.google.android.play:integrity:1.6.0`.
 - Paywall blocks: `timer` (countdown to a date or from when the paywall opens), `video` (drawn as its poster; React Native has no built-in player), `toggle` (free-trial switch that flips the selected package) and the card `carousel` layout (swipeable pages with dots and optional auto-advance).
 
