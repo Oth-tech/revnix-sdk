@@ -74,6 +74,9 @@ import type { SelectionContext } from "../blocks/selection.js";
 import {
   DESIGN_CANVAS,
   hasCloseAction,
+  onboardingScreen,
+  stepScreen,
+  type BlockAction,
   type BlockStyle,
   type PaywallBlock,
   type PaywallBlockDoc,
@@ -600,6 +603,7 @@ interface RenderContext {
   onTerms?: () => void;
   onPrivacy?: () => void;
   onClose?: () => void;
+  navigate: (action: BlockAction | undefined) => (() => void) | undefined;
   footer?: { termsUrl?: string; privacyUrl?: string };
   heroImageUrl?: string;
   gradient?: RevnixGradientComponent;
@@ -622,13 +626,14 @@ function BlockText({
   ctx,
   inherited,
   onPress,
+  pressLabel,
 }: {
   text: string;
   style: BlockStyle | undefined;
   ctx: RenderContext;
   inherited: InheritedText;
-  /** Set when the design marks this element as the close (REV-252). */
   onPress?: () => void;
+  pressLabel?: string;
 }) {
   const styleCtx = { ...ctx.style, fontSize: inherited.fontSize };
   // The block's own typography is folded into the inherited set first, so
@@ -661,7 +666,7 @@ function BlockText({
     return (
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Close"
+        accessibilityLabel={pressLabel}
         hitSlop={8}
         onPress={onPress}
         style={toViewStyle(style, styleCtx)}
@@ -745,45 +750,66 @@ function Carousel({
         ))}
       </ScrollView>
       {pages.length > 1 ? (
-        <View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            bottom: 8,
-            left: 0,
-            right: 0,
-            flexDirection: "row",
-            justifyContent: "center",
-            gap: 6,
-          }}
-        >
-          {pages.map((_, i) => (
-            <View
-              key={i}
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: 3,
-                backgroundColor:
-                  i === page ? doc.accent : withAlpha(doc.textColor, 0.3),
-              }}
-            />
-          ))}
-        </View>
+        <Dots count={pages.length} active={page} doc={doc} style={{ bottom: 8 }} />
       ) : null}
     </View>
   );
 }
 
-/** The press handler for a block the design marks as the close, or undefined
- *  when it is not one (or the host wired no dismissal). One helper so text,
- *  image and button blocks cannot drift on what "action: close" means. */
-function closePress(
-  block: { action?: "close" },
+function Dots({
+  count,
+  active,
+  doc,
+  style,
+}: {
+  count: number;
+  active: number;
+  doc: PaywallBlockDoc;
+  style: ViewStyle;
+}) {
+  return (
+    <View
+      pointerEvents="none"
+      style={[
+        {
+          position: "absolute",
+          left: 0,
+          right: 0,
+          flexDirection: "row",
+          justifyContent: "center",
+          gap: 6,
+        },
+        style,
+      ]}
+    >
+      {Array.from({ length: count }, (_, i) => (
+        <View
+          key={i}
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: 3,
+            backgroundColor:
+              i === active ? doc.accent : withAlpha(doc.textColor, 0.3),
+          }}
+        />
+      ))}
+    </View>
+  );
+}
+
+function actionPress(
+  block: { action?: BlockAction },
   ctx: RenderContext
 ): (() => void) | undefined {
-  return block.action === "close" && ctx.onClose ? ctx.onClose : undefined;
+  return block.action === "close" ? ctx.onClose : ctx.navigate(block.action);
 }
+
+const ACTION_LABEL: Record<BlockAction, string> = {
+  close: "Close",
+  next: "Next",
+  back: "Back",
+};
 
 /** Typography that is NOT inherited (decoration) — everything else already
  *  arrives through the inherited set. */
@@ -983,7 +1009,8 @@ function Block({
           style={style}
           ctx={ctx}
           inherited={inherited}
-          onPress={closePress(block, ctx)}
+          onPress={actionPress(block, ctx)}
+          pressLabel={block.action === "close" ? "Close" : undefined}
         />
       );
 
@@ -1039,17 +1066,17 @@ function Block({
           s.aspectRatio !== undefined ||
           (s.top !== undefined && s.bottom !== undefined) ||
           s.flex !== undefined);
-      // An icon the design marks as the close (REV-252). Same rule as text:
-      // the whole box is the target, and the style lands on the Pressable so
-      // a pinned icon keeps its offsets.
-      const closeImage = image ? closePress(block, ctx) : undefined;
-      const ImageBox = closeImage ? Pressable : View;
+      const action = block.type === "image" ? block.action : undefined;
+      const imagePress = actionPress({ action }, ctx);
+      const ImageBox = imagePress ? Pressable : View;
       return (
         <ImageBox
-          accessibilityRole={closeImage ? "button" : undefined}
-          accessibilityLabel={closeImage ? "Close" : undefined}
-          hitSlop={closeImage ? 8 : undefined}
-          onPress={closeImage}
+          accessibilityRole={imagePress ? "button" : undefined}
+          accessibilityLabel={
+            imagePress && action ? ACTION_LABEL[action] : undefined
+          }
+          hitSlop={imagePress ? 8 : undefined}
+          onPress={imagePress}
           style={[
             sized ? null : { height: 160 },
             { borderRadius: round ? 9999 : sized ? 0 : 16, overflow: "hidden", flexShrink: 0 },
@@ -1130,17 +1157,18 @@ function Block({
       // A button the design marks as the close dismisses instead of buying,
       // and takes no accent fill: the CTA must stay the one accented thing on
       // the screen, or a "Not now" competes with "Subscribe" for the eye.
-      const close = closePress(block, ctx);
+      const close = block.action === "close" ? ctx.onClose : undefined;
+      const navigates = block.action === "next" || block.action === "back";
       // A purchase in flight: the button keeps its box and fill, loses its
       // label to a spinner in the ink colour, and ignores taps. A close
       // button is never blocked — the user can always leave.
-      const busy = !close && ctx.loading;
+      const busy = !close && !navigates && ctx.loading;
       return (
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ disabled: busy, busy }}
           disabled={busy}
-          onPress={close ?? ctx.onPurchase}
+          onPress={navigates ? actionPress(block, ctx) : (close ?? ctx.onPurchase)}
           style={({ pressed }) => [
             {
               backgroundColor: close ? "transparent" : doc.accent,
@@ -1408,6 +1436,13 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
     string | undefined
   >(undefined);
   const [shownAt] = React.useState(Date.now);
+  const [screenIndex, setScreenIndex] = React.useState(0);
+  const [screenDoc, setScreenDoc] = React.useState(props.doc);
+  if (screenDoc !== props.doc) {
+    setScreenDoc(props.doc);
+    setScreenIndex(0);
+  }
+  const screen = onboardingScreen(doc, screenIndex);
   // Contract §1: host → own tap → design highlight → first package, each
   // only when the offering carries it.
   const selectedId = selectedPackageId(
@@ -1451,6 +1486,10 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
     onTerms: props.onTerms,
     onPrivacy: props.onPrivacy,
     onClose: props.onClose,
+    navigate: (action) => {
+      const to = stepScreen(doc, screenIndex, action);
+      return to === undefined ? undefined : () => setScreenIndex(to);
+    },
     footer: props.footer,
     heroImageUrl: props.heroImageUrl,
     gradient: props.gradient,
@@ -1460,7 +1499,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
     shownAt,
   };
 
-  const children = doc.blocks.map((block) => (
+  const children = screen.blocks.map((block) => (
     <Block
       key={block.id}
       block={block}
@@ -1478,7 +1517,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
     props.safeAreaTop ??
     (Platform.OS === "android" ? (StatusBar.currentHeight ?? 0) : 0);
   const fallbackClose =
-    props.onClose && !hasCloseAction(doc.blocks) ? (
+    props.onClose && !hasCloseAction(screen.blocks) ? (
       <FallbackClose
         doc={doc}
         onPress={props.onClose}
@@ -1518,6 +1557,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
         style={[{ flex: 1 }, props.style]}
       >
         <ScrollView
+          key={screenIndex}
           contentContainerStyle={{ height: canvasHeight }}
           // A designed screen never shows a scrollbar — the web preview has
           // none, and in an RTL app the indicator lands on the left edge of
@@ -1554,6 +1594,14 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
               }}
             >
               {children}
+              {screen.dots ? (
+                <Dots
+                  count={screen.dots.count}
+                  active={screen.dots.active}
+                  doc={doc}
+                  style={{ top: 20, zIndex: 50 }}
+                />
+              ) : null}
             </View>
           </View>
         </ScrollView>
@@ -1571,6 +1619,7 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
       style={[{ flex: 1 }, props.style]}
     >
       <ScrollView
+        key={screenIndex}
         contentContainerStyle={{
           gap: 12,
           paddingHorizontal: 20,
@@ -1583,6 +1632,14 @@ export function RevnixBlockPaywall(props: RevnixBlockPaywallProps) {
       >
         {children}
       </ScrollView>
+      {screen.dots ? (
+        <Dots
+          count={screen.dots.count}
+          active={screen.dots.active}
+          doc={doc}
+          style={{ top: 20 + safeAreaTop, zIndex: 50 }}
+        />
+      ) : null}
       {fallbackClose}
     </ScreenBackground>
   );

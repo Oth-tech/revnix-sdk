@@ -135,13 +135,15 @@ export interface BlockStyle {
  *  one. Ignored outside a package card — a root block is always drawn. */
 export type BlockVisibility = "selected" | "unselected";
 
-export type BlockAction = "close";
+/** `close` dismisses the paywall; `next`/`back` move between onboarding
+ *  screens and only appear inside `screens`. */
+export type BlockAction = "close" | "next" | "back";
 
 export interface TextBlock {
   id: string;
   type: "text";
   text: string;
-  /** Tapping this block dismisses the paywall. See BlockAction. */
+  /** What tapping this block does. See BlockAction. */
   action?: BlockAction;
   style?: BlockStyle;
   /** REV-262: merged over `style`, field by field, while the block sits in a
@@ -159,7 +161,7 @@ export interface ImageBlock {
   shape?: "rect" | "circle";
   fit?: "cover" | "contain";
   placeholder?: string;
-  /** Tapping this block dismisses the paywall. See BlockAction. */
+  /** What tapping this block does. See BlockAction. */
   action?: BlockAction;
   style?: BlockStyle;
   /** REV-262: merged over `style`, field by field, while the block sits in a
@@ -206,8 +208,9 @@ export interface ButtonBlock {
   id: string;
   type: "button";
   label: string;
-  /** `close` turns this button into a dismiss ("Not now") instead of the
-   *  purchase CTA, which is what a button means by default. */
+  /** `close` turns this button into a dismiss ("Not now"), and `next`/`back`
+   *  into onboarding navigation, instead of the purchase CTA, which is what a
+   *  button means by default. */
   action?: BlockAction;
   style?: BlockStyle;
   /** REV-262: merged over `style`, field by field, while the block sits in a
@@ -356,6 +359,10 @@ export interface PaywallBlockDoc {
   accentInk: string;
   fontFamily?: string;
   blocks: PaywallBlock[];
+  /** Onboarding: intro screens shown in order before `blocks`, which stays
+   *  the last (purchase) screen. They share the doc's palette, layout and
+   *  locale table. Absent or empty = `blocks` alone. */
+  screens?: PaywallBlock[][];
   /** REV-271: the language the blocks' own copy is written in. Absent = "en".
    *  Never a key in a stored doc's `locales` — the tree IS that language's
    *  version. A localized copy names the language it was localized to. */
@@ -398,4 +405,27 @@ export function hasCloseAction(blocks: PaywallBlock[]): boolean {
         : (b.type === "text" || b.type === "image" || b.type === "button") &&
           b.action === "close"
   );
+}
+
+export function onboardingScreen(
+  doc: PaywallBlockDoc,
+  index: number
+): { blocks: PaywallBlock[]; dots?: { count: number; active: number } } {
+  const intro = doc.screens?.[index];
+  if (intro === undefined) return { blocks: doc.blocks };
+  return {
+    blocks: intro,
+    dots: { count: doc.screens!.length + 1, active: index },
+  };
+}
+
+export function stepScreen(
+  doc: PaywallBlockDoc,
+  index: number,
+  action: BlockAction | undefined
+): number | undefined {
+  if (index >= (doc.screens?.length ?? 0)) return undefined;
+  if (action === "next") return index + 1;
+  if (action === "back" && index > 0) return index - 1;
+  return undefined;
 }

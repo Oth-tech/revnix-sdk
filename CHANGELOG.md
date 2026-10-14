@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Paywall blocks: onboarding `screens` (intro screens shown before the paywall, with progress dots) and the `next` / `back` block actions that move between them. A design without `screens` renders as before.
+
 ## 1.7.0 (2026-10-13)
 
 ### Added

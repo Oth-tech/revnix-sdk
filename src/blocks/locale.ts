@@ -193,6 +193,13 @@ export function localizeBlockDoc(
     ...doc,
     defaultLocale: chain[0],
     blocks: doc.blocks.map((b) => localizeBlock(b, lookup)),
+    ...(doc.screens
+      ? {
+          screens: doc.screens.map((screen) =>
+            screen.map((b) => localizeBlock(b, lookup))
+          ),
+        }
+      : {}),
   };
 }
 

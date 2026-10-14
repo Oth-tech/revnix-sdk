@@ -65,7 +65,16 @@ function asBlockDoc(value: unknown): PaywallBlockDoc | null {
     typeof doc.textColor === "string" &&
     typeof doc.accent === "string" &&
     typeof doc.accentInk === "string"
-    ? (doc as PaywallBlockDoc)
+    ? {
+        ...(doc as PaywallBlockDoc),
+        ...(doc.screens !== undefined
+          ? {
+              screens: Array.isArray(doc.screens)
+                ? doc.screens.filter((s) => Array.isArray(s) && s.length > 0)
+                : [],
+            }
+          : {}),
+      }
     : null;
 }
 
@@ -480,7 +489,7 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
   // arrives after a placeholder (or is swapped by an A/B assignment) would
   // otherwise crash on "rendered more hooks than during the previous render".
   const { config } = props;
-  const blocks = asBlockDoc(config.blocks);
+  const blocks = React.useMemo(() => asBlockDoc(config.blocks), [config.blocks]);
   // Both sinks fire when both are wired; nil when neither is, which is what
   // stops the renderer building a message nobody will read.
   const renderDiagnostic =
