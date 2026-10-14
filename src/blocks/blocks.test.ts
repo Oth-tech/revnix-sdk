@@ -16,7 +16,8 @@ import {
 } from "./style.js";
 import { formatCountdown, resolveTags, timerText } from "./tags.js";
 import { resolveBlocks, toggleSelection } from "./selection.js";
-import { hasCloseAction } from "./types.js";
+import { hasCloseAction, onboardingScreen, stepScreen } from "./types.js";
+import { localizeBlockDoc } from "./locale.js";
 import type {
   PaywallBlock,
   PaywallBlockDoc,
@@ -619,5 +620,70 @@ describe("timer, video, toggle and carousel in a tree", () => {
     const walked = resolveBlocks(JSON.parse(JSON.stringify(tree)), [], undefined);
     expect([...walked.keys()]).toEqual(["t", "v", "g", "c", "p1", "p2", "x"]);
     expect(hasCloseAction(tree.blocks)).toBe(false);
+  });
+});
+
+describe("onboarding screens", () => {
+  const flow: PaywallBlockDoc = {
+    ...DOC,
+    screens: [
+      [
+        { id: "s1_t", type: "text", text: "Welcome" },
+        { id: "s1_n", type: "button", label: "Continue", action: "next" },
+      ],
+      [
+        { id: "s2_x", type: "text", text: "×", action: "close" },
+        { id: "s2_b", type: "text", text: "Back", action: "back" },
+        { id: "s2_n", type: "button", label: "Continue", action: "next" },
+      ],
+    ],
+    blocks: [
+      { id: "p_t", type: "text", text: "Go Pro" },
+      { id: "p_b", type: "button", label: "Start free trial" },
+    ],
+    locales: { es: { "s1_t.text": "Bienvenido", "s2_n.label": "Continuar" } },
+  };
+  const ids = (index: number) => onboardingScreen(flow, index).blocks.map((b) => b.id);
+
+  test("opens on the first intro screen and walks next/back to the paywall", () => {
+    expect(ids(0)).toEqual(["s1_t", "s1_n"]);
+    expect(stepScreen(flow, 0, "next")).toBe(1);
+    expect(stepScreen(flow, 1, "back")).toBe(0);
+    expect(stepScreen(flow, 1, "next")).toBe(2);
+    expect(ids(2)).toEqual(["p_t", "p_b"]);
+  });
+
+  test("next/back where they mean nothing are inert", () => {
+    expect(stepScreen(flow, 0, "back")).toBeUndefined();
+    expect(stepScreen(flow, 2, "next")).toBeUndefined();
+    expect(stepScreen(flow, 2, "back")).toBeUndefined();
+    expect(stepScreen(flow, 0, "close")).toBeUndefined();
+    expect(stepScreen(flow, 0, undefined)).toBeUndefined();
+  });
+
+  test("dots only on intro screens, the paywall counted as the last", () => {
+    expect(onboardingScreen(flow, 0).dots).toEqual({ count: 3, active: 0 });
+    expect(onboardingScreen(flow, 1).dots).toEqual({ count: 3, active: 1 });
+    expect(onboardingScreen(flow, 2).dots).toBeUndefined();
+  });
+
+  test("a doc without screens is the paywall alone", () => {
+    for (const plain of [DOC, { ...DOC, screens: [] }]) {
+      expect(onboardingScreen(plain, 0)).toEqual({ blocks: plain.blocks });
+      expect(stepScreen(plain, 0, "next")).toBeUndefined();
+    }
+  });
+
+  test("the locale overlay reaches screen blocks", () => {
+    const out = localizeBlockDoc(flow, "es");
+    expect(out.screens?.[0]?.[0]).toMatchObject({ text: "Bienvenido" });
+    expect(out.screens?.[1]?.[2]).toMatchObject({ label: "Continuar" });
+    expect(out.blocks[0]).toMatchObject({ text: "Go Pro" });
+  });
+
+  test("the fallback close is judged per screen", () => {
+    expect(hasCloseAction(onboardingScreen(flow, 0).blocks)).toBe(false);
+    expect(hasCloseAction(onboardingScreen(flow, 1).blocks)).toBe(true);
+    expect(hasCloseAction(onboardingScreen(flow, 2).blocks)).toBe(false);
   });
 });
