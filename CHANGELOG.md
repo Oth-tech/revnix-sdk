@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.9.0 (2026-10-22)
+
 Ship this release after the matching Revnix server update: iOS now posts revoked transactions, which an older server would book as purchases.
 
 ### Added
