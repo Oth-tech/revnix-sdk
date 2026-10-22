@@ -10,7 +10,7 @@ import type { IntegrityEvidence, RevnixConfig } from "../types.js";
 interface NativeRevnixStore {
   purchase(productId: string, customerId: string): Promise<StoreTransaction | null>;
   restore(): Promise<StoreTransaction[]>;
-  finish(transactionId: string): Promise<void>;
+  finish(transactionId: string, consume: boolean): Promise<void>;
   deviceIntegrity?(customerId: string): Promise<IntegrityEvidence | null>;
   advertisingId?(): Promise<string | null>;
 }
@@ -28,7 +28,7 @@ export const RevnixStore: StoreAdapter = native
   ? {
       purchase: (productId, { customerId }) => native.purchase(productId, customerId),
       restore: () => native.restore(),
-      finish: (transactionId) => native.finish(transactionId),
+      finish: (transactionId, consume) => native.finish(transactionId, consume === true),
       observe(onTransaction) {
         const sub = new NativeEventEmitter(NativeModules.RevnixStore).addListener(
           "revnixStoreTransaction",

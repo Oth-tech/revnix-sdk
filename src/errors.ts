@@ -24,6 +24,16 @@ export class PurchaseBlockedError extends RevnixError {
   }
 }
 
+/** purchase() found an earlier Google Play consumable of this product still
+ *  owned. It was registered and consumed instead of charging again; ask the
+ *  customer to buy again. */
+export class PurchaseAlreadyOwnedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PurchaseAlreadyOwnedError";
+  }
+}
+
 /** C7: the request didn't complete within the configured timeout (default
  *  10s). `fetch` has no default timeout on React Native / browsers, so without
  *  this a slow or dead backend would hang the app until the OS TCP timeout. */

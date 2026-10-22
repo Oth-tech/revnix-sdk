@@ -9,6 +9,7 @@ import com.android.billingclient.api.BillingClient.ProductType
 import com.android.billingclient.api.BillingClientStateListener
 import com.android.billingclient.api.BillingFlowParams
 import com.android.billingclient.api.BillingResult
+import com.android.billingclient.api.ConsumeParams
 import com.android.billingclient.api.PendingPurchasesParams
 import com.android.billingclient.api.ProductDetails
 import com.android.billingclient.api.Purchase
@@ -96,10 +97,9 @@ class RevnixStoreModule(context: ReactApplicationContext) :
     }
   }
 
-  // ponytail: acknowledges every purchase; consumable INAPP products need consumeAsync to be bought again
   @ReactMethod
-  fun finish(purchaseToken: String, promise: Promise) {
-    if (purchaseToken in acknowledged) {
+  fun finish(purchaseToken: String, consume: Boolean, promise: Promise) {
+    if (!consume && purchaseToken in acknowledged) {
       promise.resolve(null)
       return
     }
@@ -108,13 +108,32 @@ class RevnixStoreModule(context: ReactApplicationContext) :
         promise.reject("store_error", "${setup.responseCode} ${setup.debugMessage}")
         return@withBilling
       }
-      val params = AcknowledgePurchaseParams.newBuilder().setPurchaseToken(purchaseToken).build()
-      billing.acknowledgePurchase(params) { result ->
-        if (result.responseCode == BillingResponseCode.OK) {
+      val acknowledge = { onResult: (BillingResult) -> Unit ->
+        val params = AcknowledgePurchaseParams.newBuilder().setPurchaseToken(purchaseToken).build()
+        billing.acknowledgePurchase(params) { result ->
+          if (result.responseCode == BillingResponseCode.OK) acknowledged.add(purchaseToken)
+          onResult(result)
+        }
+      }
+      if (!consume) {
+        acknowledge { result ->
+          if (result.responseCode == BillingResponseCode.OK) promise.resolve(null)
+          else promise.reject("store_error", "acknowledgePurchase failed: ${result.responseCode} ${result.debugMessage}")
+        }
+        return@withBilling
+      }
+      val params = ConsumeParams.newBuilder().setPurchaseToken(purchaseToken).build()
+      billing.consumeAsync(params) { consumed, _ ->
+        if (consumed.responseCode == BillingResponseCode.OK) {
           acknowledged.add(purchaseToken)
           promise.resolve(null)
         } else {
-          promise.reject("store_error", "acknowledgePurchase failed: ${result.responseCode} ${result.debugMessage}")
+          acknowledge { acked ->
+            promise.reject(
+              "store_error",
+              "consumeAsync failed: ${consumed.responseCode} ${consumed.debugMessage}; acknowledgePurchase fallback: ${acked.responseCode} ${acked.debugMessage}",
+            )
+          }
         }
       }
     }
@@ -193,7 +212,7 @@ class RevnixStoreModule(context: ReactApplicationContext) :
         if (result.responseCode == BillingResponseCode.OK) {
           queryPurchases(ProductType.SUBS) { subs ->
             queryPurchases(ProductType.INAPP) { inapp ->
-              (subs + inapp).filterNot { it.isAcknowledged }.forEach { emit(toMap(it)) }
+              (subs.filterNot { it.isAcknowledged } + inapp).forEach { emit(toMap(it)) }
             }
           }
         }
@@ -210,7 +229,7 @@ class RevnixStoreModule(context: ReactApplicationContext) :
       BillingResponseCode.ITEM_ALREADY_OWNED -> queryPurchases(ProductType.SUBS) { subs ->
         queryPurchases(ProductType.INAPP) { inapp ->
           val owned = (subs + inapp).firstOrNull { waiting.productId in it.products }
-          if (owned != null) waiting.promise.resolve(toMap(owned))
+          if (owned != null) waiting.promise.resolve(toMap(owned).apply { putBoolean("alreadyOwned", true) })
           else waiting.promise.reject("store_error", "${result.responseCode} ${result.debugMessage}")
         }
       }
@@ -274,6 +293,7 @@ class RevnixStoreModule(context: ReactApplicationContext) :
       putString("transactionId", purchase.purchaseToken)
       putString("token", purchase.purchaseToken)
       putDouble("occurredAt", purchase.purchaseTime.toDouble())
+      putBoolean("acknowledged", purchase.isAcknowledged)
     }
   }
 

@@ -12,6 +12,7 @@ RCT_EXTERN_METHOD(restore:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
 RCT_EXTERN_METHOD(finish:(NSString *)transactionId
+                  consume:(BOOL)consume
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import { RevnixClient } from "./client.js";
-import { PurchaseBlockedError, RevnixError } from "./errors.js";
+import { PurchaseAlreadyOwnedError, PurchaseBlockedError, RevnixError } from "./errors.js";
 import { memoryStorage } from "./storage.js";
 import { setStoreAdapter, type StoreAdapter, type StoreTransaction } from "./store.js";
 
@@ -344,7 +344,242 @@ describe("restore()", () => {
   });
 });
 
+describe("consumableProductIds", () => {
+  const registered = { eventId: "e1", seq: 1, duplicate: false, customerId: "cust-1" };
+
+  function recordFinishes(txs: StoreTransaction[]) {
+    const finishCalls: Array<[string, boolean | undefined]> = [];
+    setStoreAdapter(
+      fakeAdapter({
+        purchase: async () => txs[0] ?? null,
+        restore: async () => txs,
+        finish: async (id, consume) => {
+          finishCalls.push([id, consume]);
+        },
+      })
+    );
+    return finishCalls;
+  }
+
+  test("a registered Google consumable is consumed, other products acknowledged", async () => {
+    const finishCalls = recordFinishes([
+      { store: "google", productId: "coins.100", transactionId: "g-coins", token: "g-coins" },
+      { store: "google", productId: "pro.monthly", transactionId: "g-sub", token: "g-sub" },
+    ]);
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: mockFetch({ status: 201, body: registered }, { status: 201, body: registered }),
+      customerId: "cust-1",
+      reportInstalls: false,
+      consumableProductIds: ["coins.100"],
+    });
+
+    expect(await client.restore()).toBe(2);
+    expect(finishCalls).toEqual([
+      ["g-coins", true],
+      ["g-sub", false],
+    ]);
+  });
+
+  test("a consumable whose registration failed is acknowledged, not consumed", async () => {
+    const finishCalls = recordFinishes([
+      { store: "google", productId: "coins.100", transactionId: "g-coins", token: "g-coins" },
+    ]);
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: mockFetch({ status: 503, body: { error: "boom" } }),
+      storage: memoryStorage(),
+      customerId: "cust-1",
+      reportInstalls: false,
+      consumableProductIds: ["coins.100"],
+    });
+
+    await expect(client.purchase("coins.100")).rejects.toBeInstanceOf(RevnixError);
+    expect(finishCalls).toEqual([["g-coins", false]]);
+  });
+
+  test("an already-owned consumable from purchase() is registered, consumed, and not reported as a new purchase", async () => {
+    const finishCalls = recordFinishes([
+      {
+        store: "google",
+        productId: "coins.100",
+        transactionId: "g-old",
+        token: "g-old",
+        acknowledged: true,
+        alreadyOwned: true,
+      },
+    ]);
+    const fetchImpl = mockFetch({ status: 201, body: { ...registered, duplicate: true } });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      customerId: "cust-1",
+      reportInstalls: false,
+      consumableProductIds: ["coins.100"],
+    });
+
+    await expect(client.purchase("coins.100")).rejects.toBeInstanceOf(
+      PurchaseAlreadyOwnedError
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(finishCalls).toEqual([["g-old", true]]);
+  });
+
+  test("an already-owned non-consumable still resolves as today", async () => {
+    const finishCalls = recordFinishes([
+      {
+        store: "google",
+        productId: "lifetime",
+        transactionId: "g-life",
+        token: "g-life",
+        acknowledged: true,
+        alreadyOwned: true,
+      },
+    ]);
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: mockFetch({ status: 201, body: registered }),
+      customerId: "cust-1",
+      reportInstalls: false,
+      consumableProductIds: ["coins.100"],
+    });
+
+    expect((await client.purchase("lifetime"))?.seq).toBe(1);
+    expect(finishCalls).toEqual([["g-life", false]]);
+  });
+
+  test("the launch sweep consumes acknowledged consumables and skips other acknowledged purchases", async () => {
+    let observedCallback: ((tx: StoreTransaction) => void) | undefined;
+    const finishCalls: Array<[string, boolean | undefined]> = [];
+    setStoreAdapter(
+      fakeAdapter({
+        observe: (cb) => {
+          observedCallback = cb;
+          return () => {};
+        },
+        finish: async (id, consume) => {
+          finishCalls.push([id, consume]);
+        },
+      })
+    );
+    const fetchImpl = mockFetch({ status: 201, body: registered });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      customerId: "cust-1",
+      reportInstalls: false,
+      consumableProductIds: ["coins.100"],
+    });
+
+    observedCallback?.({
+      store: "google",
+      productId: "lifetime",
+      transactionId: "g-life",
+      token: "g-life",
+      acknowledged: true,
+    });
+    observedCallback?.({
+      store: "google",
+      productId: "coins.100",
+      transactionId: "g-coins",
+      token: "g-coins",
+      acknowledged: true,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(lastCall(fetchImpl).body).toMatchObject({ token: "g-coins" });
+    expect(finishCalls).toEqual([["g-coins", true]]);
+    client.dispose();
+  });
+
+  test("a failed consume reaches onDiagnostic without failing the purchase", async () => {
+    setStoreAdapter(
+      fakeAdapter({
+        purchase: async () => ({
+          store: "google",
+          productId: "coins.100",
+          transactionId: "g-coins",
+          token: "g-coins",
+        }),
+        finish: async () => {
+          throw new Error("consumeAsync failed: 8; acknowledgePurchase fallback: 0");
+        },
+      })
+    );
+    const ops: string[] = [];
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: mockFetch({ status: 201, body: registered }),
+      customerId: "cust-1",
+      reportInstalls: false,
+      consumableProductIds: ["coins.100"],
+      onDiagnostic: (event) => ops.push(event.op),
+    });
+
+    expect((await client.purchase("coins.100"))?.seq).toBe(1);
+    expect(ops).toContain("storeFinish");
+  });
+
+  test("an Apple transaction is never marked for consumption", async () => {
+    const finishCalls = recordFinishes([
+      { store: "apple", productId: "coins.100", transactionId: "a-1", token: "a-1" },
+    ]);
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: mockFetch({ status: 201, body: registered }),
+      customerId: "cust-1",
+      reportInstalls: false,
+      consumableProductIds: ["coins.100"],
+    });
+
+    await client.purchase("coins.100");
+    expect(finishCalls).toEqual([["a-1", false]]);
+  });
+});
+
 describe("store observer wiring", () => {
+  test("a revoked Apple update is posted with its JWS for the server to revoke", async () => {
+    let observedCallback: ((tx: StoreTransaction) => void) | undefined;
+    setStoreAdapter(
+      fakeAdapter({
+        observe: (cb) => {
+          observedCallback = cb;
+          return () => {};
+        },
+      })
+    );
+    const fetchImpl = mockFetch({
+      status: 201,
+      body: { eventId: "e1", seq: 1, duplicate: false, customerId: "cust-1" },
+    });
+    const storage = memoryStorage();
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      storage,
+      customerId: "cust-1",
+      reportInstalls: false,
+    });
+
+    observedCallback?.({
+      store: "apple",
+      productId: "pro.monthly",
+      transactionId: "revoked-1",
+      token: "orig-1",
+      signedTransactionInfo: "h.revoked.s",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(lastCall(fetchImpl)).toMatchObject({
+      url: "https://demo.convex.site/v1/purchases",
+      body: { transactionId: "revoked-1", signedTransactionInfo: "h.revoked.s" },
+    });
+    expect(await storage.getItem("revnix.entitlements")).toBeNull();
+    client.dispose();
+  });
+
   test("a transaction pushed through the observer registers and finishes; dispose unsubscribes", async () => {
     let observedCallback: ((tx: StoreTransaction) => void) | undefined;
     let unsubscribed = false;
