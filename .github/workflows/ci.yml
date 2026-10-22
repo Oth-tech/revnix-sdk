@@ -31,3 +31,44 @@ jobs:
 
       - name: Test
         run: npm test
+
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [android, ios]
+    runs-on: ${{ matrix.platform == 'ios' && 'macos-15' || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        if: matrix.platform == 'android'
+        with:
+          distribution: zulu
+          java-version: 17
+
+      - name: Host app with the packed SDK
+        run: |
+          npm ci
+          npm pack --pack-destination "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP"
+          npx --yes @react-native-community/cli@20 init RevnixHost --version "$(node -p "require('$GITHUB_WORKSPACE/node_modules/react-native/package.json').version")" --skip-git-init --install-pods false --pm npm
+          cd RevnixHost && npm install ../react-native-revnix-*.tgz
+
+      - name: Build Android
+        if: matrix.platform == 'android'
+        working-directory: ${{ runner.temp }}/RevnixHost/android
+        run: ./gradlew assembleDebug -PreactNativeArchitectures=x86_64 --console=plain
+
+      - name: Build iOS
+        if: matrix.platform == 'ios'
+        working-directory: ${{ runner.temp }}/RevnixHost/ios
+        run: |
+          pod install
+          xcodebuild -workspace RevnixHost.xcworkspace -scheme RevnixHost -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO -quiet build
