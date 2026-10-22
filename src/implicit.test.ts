@@ -720,7 +720,7 @@ describe("deep links", () => {
     const client = makeClient(impl, { onImplicitPaywall: () => undefined });
     await settle();
 
-    client.handleDeepLink(`https://example.com/?q=${"a".repeat(2000)}`);
+    client.handleDeepLink(`https://example.com/?utm_campaign=${"a".repeat(2000)}`);
     await settle();
 
     const trigger = triggersIn(calls)[0];
@@ -728,6 +728,52 @@ describe("deep links", () => {
     // The server bounds `url` at 1024 and 400s past it; trimming here keeps a
     // long campaign URL from losing the moment entirely.
     expect(String(trigger?.body?.url).length).toBe(1024);
+  });
+
+  test("handleDeepLink sends only scheme, host, path and attribution params", async () => {
+    const { impl, calls } = stubFetch([]);
+    const client = makeClient(impl);
+    await settle();
+
+    for (const url of [
+      "https://user:pw@shop.example.com:8443/p/1?email=a@b.c&UTM_Source=ig&token=s3cret&gclid=G1&c=Spring#frag",
+      "myapp://promo/summer?Campaign=x%20y&session=abc&revnix_link=L9&web_id=w1",
+      "myapp:open?pid=fb&otp=123456",
+      "/relative/path?utm_source=ig&secret=1#x",
+      "myapp://host/path?secret=1",
+      "https://x.com/c?UTM_ID=u1&x=2&campaign_id=c9",
+      "https://x.com/p?utm_campaign=a%2Bb&t=1",
+      "  https://x.com/t?utm_source=ig  \n",
+      "https://x.com/d?utm%5Fsource=ig&UTM%5FMEDIUM=cpc&utm+campaign=x&%E0%A4%A=1&gcl%69d=G",
+    ]) {
+      client.handleDeepLink(url);
+      await settle();
+    }
+
+    expect(triggersIn(calls).map((c) => c.body?.url)).toEqual([
+      "https://shop.example.com:8443/p/1?UTM_Source=ig&gclid=G1&c=Spring",
+      "myapp://promo/summer?Campaign=x%20y&revnix_link=L9&web_id=w1",
+      "myapp:open?pid=fb",
+      "/relative/path",
+      "myapp://host/path",
+      "https://x.com/c?UTM_ID=u1&campaign_id=c9",
+      "https://x.com/p?utm_campaign=a%2Bb",
+      "https://x.com/t?utm_source=ig",
+      "https://x.com/d?utm%5Fsource=ig&UTM%5FMEDIUM=cpc&gcl%69d=G",
+    ]);
+  });
+
+  test("handleDeepLink keeps the full URL as the locally stored last deep link", async () => {
+    const { impl } = stubFetch([]);
+    const client = makeClient(impl);
+    await settle();
+
+    client.handleDeepLink("myapp://promo?token=s3cret&utm_source=ig");
+    await settle();
+
+    expect((await client.getLastDeepLink())?.url).toBe(
+      "myapp://promo?token=s3cret&utm_source=ig"
+    );
   });
 
   test("every trigger carries a fresh occurrence id", async () => {

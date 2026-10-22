@@ -104,6 +104,7 @@ Your API key and deployment URL are in the dashboard under Settings. See [API ke
 **Revnix handles the hard parts of subscriptions in a small, developer-friendly SDK.**
 
 - `purchase(productId)` runs the whole flow: store sheet, server-side receipt validation, entitlement, transaction finish. `restore()` brings purchases back on a new device.
+- Consumables on Google Play: list their ids in `consumableProductIds` so they are consumed after Revnix records the purchase and can be bought again.
 - Renewals, purchases on other devices and Ask to Buy approvals arrive on their own and are registered automatically.
 - Entitlements and placements are cached on device, so paid users stay unlocked offline.
 - Failed registrations are retried automatically when the app comes back online.

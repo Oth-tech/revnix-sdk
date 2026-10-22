@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+Ship this release after the matching Revnix server update: iOS now posts revoked transactions, which an older server would book as purchases.
+
+### Added
+
+- `consumableProductIds` config option: Google Play purchases of these products are consumed after Revnix records them, so they can be bought again. If the server is unreachable the purchase is acknowledged and queued, and consumed on a later restore. Consumables acknowledged by older versions are consumed on the next launch once listed.
+- `PurchaseAlreadyOwnedError`: thrown by `purchase()` when a listed consumable is still owned. Nothing was charged; grant nothing and let the user buy again.
+
+### Changed
+
+- iOS: revoked StoreKit 2 transactions (refunds, Family Sharing removal) are now reported to the server instead of dropped.
+- `handleDeepLink` reports only scheme, host, path and known attribution query params (utm_*, campaign_id, pid, gclid, gbraid, wbraid, ttclid, sccid, twclid, revnix_link, web_id and similar). Other query params, the fragment and credentials are dropped before upload. `resolveDeepLink` still sends the full URL.
+- Native `finish` takes a `consume` flag (iOS `RevnixStore.finish(transactionId, consume)`); `StoreAdapter.finish(transactionId, consume?)` and `StoreTransaction` gain `acknowledged` and `alreadyOwned`. Custom store adapters and native module forks need to match.
+
 ## 1.8.0 (2026-10-14)
 
 ### Added

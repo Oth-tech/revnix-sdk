@@ -13,6 +13,11 @@ export interface StoreTransaction {
   expiresAt?: number;
   /** Apple only: the StoreKit 2 JWS. */
   signedTransactionInfo?: string;
+  /** Google only: already acknowledged in Play. */
+  acknowledged?: boolean;
+  /** Google only: purchase() answered with an earlier purchase Play reported
+   *  as already owned, not a new charge. */
+  alreadyOwned?: boolean;
 }
 
 export interface StoreAdapter {
@@ -22,7 +27,8 @@ export interface StoreAdapter {
     opts: { customerId: string }
   ): Promise<StoreTransaction | null>;
   restore(): Promise<StoreTransaction[]>;
-  finish(transactionId: string): Promise<void>;
+  /** `consume`: Google only, consume instead of acknowledge. */
+  finish(transactionId: string, consume?: boolean): Promise<void>;
   /** Transactions arriving outside purchase(): renewals, other devices, Ask
    *  to Buy, refunds. Returns an unsubscribe. */
   observe(onTransaction: (tx: StoreTransaction) => void): () => void;

@@ -1,4 +1,5 @@
 import {
+  PurchaseAlreadyOwnedError,
   PurchaseBlockedError,
   RevnixAuthError,
   RevnixError,
@@ -193,6 +194,33 @@ const pendingKey = (p: RegisterPurchaseInput) =>
 const worthQueueing = (err: unknown): boolean =>
   !(err instanceof RevnixError) || err.isRetryable;
 
+const ATTRIBUTION_QUERY_PARAMS = new Set([
+  "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id", "campaign_id",
+  "pid", "source", "af_channel", "medium", "c", "campaign", "term", "af_ad",
+  "content", "gclid", "gbraid", "wbraid", "ttclid", "sccid", "twclid",
+  "revnix_link", "web_id",
+]);
+
+function queryParamName(pair: string): string {
+  const raw = pair.split("=")[0] ?? "";
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, " ")).toLowerCase();
+  } catch {
+    return raw.toLowerCase();
+  }
+}
+
+function attributionOnlyUrl(rawUrl: string): string {
+  const url = rawUrl.trim();
+  const parts = /^([a-z][a-z0-9+.-]*:)(\/\/[^/?#]*)?([^?#]*)(?:\?([^#]*))?/i.exec(url);
+  if (!parts) return url.split(/[?#]/)[0] ?? "";
+  const [, scheme, authority = "", path, query = ""] = parts;
+  const kept = query
+    .split("&")
+    .filter((pair) => ATTRIBUTION_QUERY_PARAMS.has(queryParamName(pair)));
+  return `${scheme}${authority.replace(/^\/\/.*@/, "//")}${path}${kept.length > 0 ? `?${kept.join("&")}` : ""}`;
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // REV-199 (CTO-R2 M24): ±20% on every scheduled delay.
@@ -263,6 +291,7 @@ export class RevnixClient {
   private readonly onDeferredDeepLink?: RevnixConfig["onDeferredDeepLink"];
   private readonly onAttribution?: RevnixConfig["onAttribution"];
   private readonly deviceIntegrity?: RevnixConfig["deviceIntegrity"];
+  private readonly consumableProductIds: string[];
   private integrityRequest: {
     customerId: string;
     body: Promise<{ integrity?: IntegrityEvidence }>;
@@ -340,6 +369,7 @@ export class RevnixClient {
     this.onDeferredDeepLink = config.onDeferredDeepLink;
     this.onAttribution = config.onAttribution;
     this.deviceIntegrity = config.deviceIntegrity;
+    this.consumableProductIds = config.consumableProductIds ?? [];
     this.readYourWritesDelaysMs =
       config.readYourWritesDelaysMs ?? [250, 500, 1000, 2000];
     this.customerIdPromise = this.loadCustomerId(config.customerId);
@@ -351,11 +381,12 @@ export class RevnixClient {
     if (config.advertisingId) this.reportAdvertisingId(config.advertisingId);
     const store = getStoreAdapter();
     if (store) {
-      this.stopStoreObserver = store.observe((tx) =>
+      this.stopStoreObserver = store.observe((tx) => {
+        if (tx.acknowledged && !this.isConsumable(tx)) return;
         void this.registerStoreTransaction(store, tx).catch((err) =>
           this.diag("storeObserver", err)
-        )
-      );
+        );
+      });
     }
     // REV-157: warm the placement cache at launch, so the first paywall of the
     // session can render offline. Fire-and-forget; a failed key just stays on
@@ -547,6 +578,12 @@ export class RevnixClient {
     const customerId = await this.customerIdPromise;
     const tx = await store.purchase(productId, { customerId });
     if (!tx) return null;
+    if (tx.alreadyOwned && this.isConsumable(tx)) {
+      await this.registerStoreTransaction(store, tx, opts);
+      throw new PurchaseAlreadyOwnedError(
+        `Revnix: an earlier purchase of ${productId} was still owned and has been registered; buy again`
+      );
+    }
     return this.registerStoreTransaction(store, tx, opts);
   }
 
@@ -566,6 +603,10 @@ export class RevnixClient {
     return restored;
   }
 
+  private isConsumable(tx: StoreTransaction): boolean {
+    return tx.store === "google" && this.consumableProductIds.includes(tx.productId);
+  }
+
   private requireStore(): StoreAdapter {
     const store = getStoreAdapter();
     if (!store) {
@@ -582,9 +623,9 @@ export class RevnixClient {
     opts?: Pick<RegisterPurchaseInput, "viewId" | "paywallId" | "placementKey">,
     finish = true
   ): Promise<RegisterPurchaseResult> {
-    const finishTx = () =>
+    const finishTx = (consume = false) =>
       finish
-        ? store.finish(tx.transactionId).catch((err) => this.diag("storeFinish", err))
+        ? store.finish(tx.transactionId, consume).catch((err) => this.diag("storeFinish", err))
         : undefined;
     try {
       const result = await this.registerPurchase({
@@ -597,7 +638,7 @@ export class RevnixClient {
         signedTransactionInfo: tx.signedTransactionInfo,
         ...opts,
       });
-      await finishTx();
+      await finishTx(this.isConsumable(tx));
       return result;
     } catch (err) {
       if (!(err instanceof PurchaseBlockedError)) await finishTx();
@@ -1400,7 +1441,7 @@ export class RevnixClient {
       return;
     }
     void this.rememberDeepLink(url);
-    const extra = { url: url.slice(0, 1024) };
+    const extra = { url: attributionOnlyUrl(url).slice(0, 1024) };
     const batch = this.launchBatch;
     if (batch === null) {
       this.fireImplicit("deeplink_open", extra);

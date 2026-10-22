@@ -161,6 +161,9 @@ export interface RevnixConfig {
    *  read. A null answer deletes a previously stored `gps_adid`; a
    *  rejection changes nothing and reports `op: "advertisingId"`. */
   advertisingId?: () => Promise<string | null | undefined>;
+  /** Google Play product ids sold as consumables. A registered purchase of
+   *  one is consumed instead of acknowledged so it can be bought again. */
+  consumableProductIds?: string[];
 }
 
 /** Device integrity evidence for `POST /v1/installs` and `/v1/attribution`.

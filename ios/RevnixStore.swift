@@ -20,7 +20,7 @@ class RevnixStore: RCTEventEmitter {
   override func startObserving() {
     updates?.cancel()
     updates = Task { [weak self] in
-      for await update in Transaction.updates where update.unsafePayloadValue.revocationDate == nil {
+      for await update in Transaction.updates {
         self?.sendEvent(withName: "revnixStoreTransaction", body: RevnixStore.payload(update))
       }
     }
@@ -72,9 +72,10 @@ class RevnixStore: RCTEventEmitter {
     }
   }
 
-  @objc(finish:resolver:rejecter:)
+  @objc(finish:consume:resolver:rejecter:)
   func finish(
     _ transactionId: String,
+    consume _: Bool,
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {

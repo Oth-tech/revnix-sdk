@@ -4,6 +4,7 @@ import type { RevnixConfig } from "./types.js";
 
 export { RevnixClient } from "./client.js";
 export {
+  PurchaseAlreadyOwnedError,
   PurchaseBlockedError,
   RevnixAuthError,
   RevnixError,
