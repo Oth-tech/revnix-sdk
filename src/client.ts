@@ -50,6 +50,7 @@ import type {
   LastDeepLink,
   MmpAttribution,
   PaywallInteraction,
+  PaywallProductShown,
   PlacementResolution,
   RegisterPurchaseInput,
   RegisterPurchaseResult,
@@ -244,6 +245,19 @@ function wellFormedIntegrity(evidence: unknown): IntegrityEvidence | undefined {
     return { platform, token };
   }
   return undefined;
+}
+
+const MAX_PRODUCTS_SHOWN = 20;
+const MAX_PRICE_LABEL_LENGTH = 64;
+
+function boundedProductsShown(
+  products: PaywallProductShown[]
+): PaywallProductShown[] {
+  return products.slice(0, MAX_PRODUCTS_SHOWN).map((product) =>
+    product.priceLabel !== undefined
+      ? { ...product, priceLabel: product.priceLabel.slice(0, MAX_PRICE_LABEL_LENGTH) }
+      : product
+  );
 }
 
 export class RevnixClient {
@@ -996,6 +1010,10 @@ export class RevnixClient {
   logPaywallShown(options?: {
     placementKey?: string;
     paywallId?: string;
+    /** The plans the paywall drew, with the localized price each showed.
+     *  RevnixPaywall fills this from its packages; a headless paywall passes
+     *  what it rendered. */
+    productsShown?: PaywallProductShown[];
   }): string {
     const viewId = generateViewId();
     // REV-272 LOOP GUARD: a display whose placement is one of the six came
@@ -1020,6 +1038,9 @@ export class RevnixClient {
           sdkVersion: SDK_VERSION,
           ...(options?.placementKey ? { placementKey: options.placementKey } : {}),
           ...(options?.paywallId ? { paywallId: options.paywallId } : {}),
+          ...(options?.productsShown?.length
+            ? { productsShown: boundedProductsShown(options.productsShown) }
+            : {}),
         })
       )
       .catch((err) => this.diag("logPaywallShown", err));

@@ -378,6 +378,16 @@ export interface PlacementPackage {
   product: PlacementProduct | null;
 }
 
+/** One plan as a paywall drew it, for `logPaywallShown`'s `productsShown`:
+ *  the localized label the customer actually read, and the catalog price
+ *  behind it. */
+export interface PaywallProductShown {
+  productId: string;
+  priceLabel?: string;
+  amountMinor?: number;
+  currency?: string;
+}
+
 export interface PlacementProduct {
   productId: string;
   displayName: string;

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `logPaywallShown({ productsShown })`: the plans the paywall drew with the localized price label on each (`{ productId, priceLabel?, amountMinor?, currency? }`, exported as `PaywallProductShown`). Trimmed to 20 entries and 64 characters per label before sending. `RevnixPaywall` fills it from its packages automatically.
+
 ## 1.9.0 (2026-10-22)
 
 Ship this release after the matching Revnix server update: iOS now posts revoked transactions, which an older server would book as purchases.
