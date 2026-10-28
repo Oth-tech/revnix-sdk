@@ -487,6 +487,48 @@ describe("paywall view reporting", () => {
     expect(firstBody.viewId).not.toBe(call.body.viewId);
   });
 
+  test("productsShown rides on the view when given; an empty list is omitted", async () => {
+    const fetchImpl = mockFetch({ body: { ok: true } }, { body: { ok: true } });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    await client.getCustomerId();
+
+    const productsShown = [
+      { productId: "pro.monthly", priceLabel: "$9.99", amountMinor: 999, currency: "USD" },
+    ];
+    client.logPaywallShown({ placementKey: "onboarding", productsShown });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(lastCall(fetchImpl).body.productsShown).toEqual(productsShown);
+
+    client.logPaywallShown({ placementKey: "onboarding", productsShown: [] });
+    await new Promise((r) => setTimeout(r, 0));
+    expect("productsShown" in lastCall(fetchImpl).body).toBe(false);
+  });
+
+  test("productsShown is trimmed to the server's caps before sending", async () => {
+    const fetchImpl = mockFetch({ body: { ok: true } });
+    const client = new RevnixClient({
+      ...CONFIG,
+      fetch: fetchImpl,
+      reportInstalls: false,
+    });
+    await client.getCustomerId();
+
+    client.logPaywallShown({
+      productsShown: Array.from({ length: 25 }, (_, i) => ({
+        productId: `p${i}`,
+        priceLabel: "x".repeat(80),
+      })),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const sent = lastCall(fetchImpl).body.productsShown as Array<{ priceLabel: string }>;
+    expect(sent).toHaveLength(20);
+    expect(sent[0]?.priceLabel).toHaveLength(64);
+  });
+
   test("a failed view report never surfaces", async () => {
     const fetchImpl = jest.fn<typeof fetch>();
     fetchImpl.mockRejectedValueOnce(new Error("offline"));

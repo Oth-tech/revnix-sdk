@@ -33,6 +33,7 @@ import {
 import type {
   PaywallConfig,
   PaywallInteraction,
+  PaywallProductShown,
   PaywallPurchaseOutcome,
   PlacementResolution,
   RegisterPurchaseResult,
@@ -195,6 +196,7 @@ export interface RevnixPaywallProps {
     logPaywallShown: (options?: {
       placementKey?: string;
       paywallId?: string;
+      productsShown?: PaywallProductShown[];
     }) => string | void;
     /** Older clients predate close reporting; the paywall still closes. */
     logPaywallClosed?: (
@@ -278,6 +280,32 @@ export async function prefetchPaywallImages(
   );
 }
 
+function visiblePackages(
+  config: PaywallConfig,
+  packages: RevnixPaywallPackage[]
+): RevnixPaywallPackage[] {
+  return config.template === "minimal" && config.highlightPackageId
+    ? packages.filter((p) => p.packageId === config.highlightPackageId)
+    : packages;
+}
+
+function productsShownFrom(
+  packages: RevnixPaywallPackage[]
+): PaywallProductShown[] {
+  return packages.flatMap((pkg) =>
+    pkg.productId
+      ? [
+          {
+            productId: pkg.productId,
+            priceLabel: pkg.priceLabel,
+            amountMinor: pkg.amountMinor,
+            currency: pkg.currency,
+          },
+        ]
+      : []
+  );
+}
+
 export function RevnixPaywall(props: RevnixPaywallProps) {
   // One view per mount: remounting (a re-shown paywall) is a genuine new
   // display; re-renders are not.
@@ -287,7 +315,11 @@ export function RevnixPaywall(props: RevnixPaywallProps) {
   const viewIdRef = React.useRef<string | undefined>(undefined);
   React.useEffect(() => {
     if (!client || disableViewTracking) return;
-    const id = client.logPaywallShown({ placementKey, paywallId });
+    const id = client.logPaywallShown({
+      placementKey,
+      paywallId,
+      productsShown: productsShownFrom(visiblePackages(props.config, props.packages)),
+    });
     // Pre-REV-252 clients return void; the close then still fires the host
     // callback, it just cannot be paired with this display.
     if (typeof id === "string") viewIdRef.current = id;
@@ -605,10 +637,7 @@ function ClassicPaywall(
 
   // Same template semantics as the dashboard preview: "minimal" shows only
   // the highlighted package; feature bullets render on the feature layouts.
-  const shown =
-    layout === "minimal" && config.highlightPackageId
-      ? packages.filter((p) => p.packageId === config.highlightPackageId)
-      : packages;
+  const shown = visiblePackages(config, packages);
 
   const [internalSelected, setInternalSelected] = React.useState<
     string | undefined

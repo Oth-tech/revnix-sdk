@@ -51,6 +51,7 @@ export type {
   MmpProvider,
   PaywallConfig,
   PaywallInteraction,
+  PaywallProductShown,
   PaywallPurchaseOutcome,
   PlacementOffering,
   PlacementPackage,
