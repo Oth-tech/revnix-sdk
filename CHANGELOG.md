@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.11.0 (2026-10-29)
+
 ### Added
 
 - `logPaywallShown({ productsShown })`: the plans the paywall drew with the localized price label on each (`{ productId, priceLabel?, amountMinor?, currency? }`, exported as `PaywallProductShown`). Trimmed to 20 entries and 64 characters per label before sending. `RevnixPaywall` fills it from its packages automatically.
