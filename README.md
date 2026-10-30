@@ -175,7 +175,7 @@ It runs once per customer, waits at most 10 seconds and never blocks the report.
 
 - **React Native** 0.72 or later, New Architecture and legacy architecture alike. iOS 15.1 or later (StoreKit 2), Android with Google Play Billing 8.
 - **Expo**: supported with a development build. Expo Go cannot load the store module.
-- **React and Next.js**: the same package powers web apps; the store module is mobile only, web registers purchases from your server. See [React](https://www.revnix.io/docs/react).
+- **React and Next.js**: the same package powers web apps; the store module is mobile only, web registers purchases from your server. In a browser pass `fetch: (input, init) => fetch(input, init)` to `configure`, and note the `/v1` API does not answer CORS preflight today, so route calls through your own backend (set `baseUrl` to your proxy) or gate server-side over REST. See [React](https://www.revnix.io/docs/react).
 - **Other platforms**: Revnix also ships SDKs for [iOS](https://www.revnix.io/docs/ios), [Android](https://www.revnix.io/docs/android), [Flutter](https://www.revnix.io/docs/flutter), [Capacitor](https://www.revnix.io/docs/capacitor) and [Unity](https://www.revnix.io/docs/unity).
 - Ships CommonJS and ESM builds, tree-shakeable, with full TypeScript types.
 
