@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 2.0.0 (2026-11-25)
+
+No SDK changes. Forced release 55ceaf4; the package contents are identical to 1.11.0.
+
 ## 1.11.0 (2026-10-29)
 
 ### Added
