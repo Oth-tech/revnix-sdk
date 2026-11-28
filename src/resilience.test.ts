@@ -1,6 +1,8 @@
 import { describe, expect, jest, test } from "@jest/globals";
+import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { RevnixClient } from "./client.js";
 import {
+  RevnixError,
   RevnixNetworkError,
   RevnixRateLimitError,
   RevnixTimeoutError,
@@ -10,7 +12,16 @@ import { memoryStorage } from "./storage.js";
 // C7: SDK resilience — request timeouts, offline entitlement cache, and a
 // persisted purchase retry queue.
 
-const CONFIG = { apiKey: "rvx_pk_test_abc", baseUrl: "https://demo.convex.site" };
+const SIGNER = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const UNPINNED = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+
+const CONFIG = {
+  apiKey: "rvx_pk_test_abc",
+  baseUrl: "https://demo.convex.site",
+  entitlementSigningKeys: [
+    SIGNER.publicKey.export({ type: "spki", format: "der" }).toString("base64"),
+  ],
+};
 
 const ENT_BODY = {
   customerId: "cust-c7",
@@ -20,6 +31,56 @@ const ENT_BODY = {
 
 function jsonResponse(body: unknown, status = 200, headers?: Record<string, string>) {
   return new Response(JSON.stringify(body), { status, headers });
+}
+
+const sha256Hex = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+
+interface Signed {
+  body: string;
+  signedAt: string;
+  signature: string;
+}
+
+function signEntitlements(
+  body: unknown,
+  {
+    customerId = "cust-c7",
+    apiKey = CONFIG.apiKey,
+    key = SIGNER.privateKey,
+    signedAt = Date.now(),
+  }: { customerId?: string; apiKey?: string; key?: KeyObject; signedAt?: number } = {}
+): Signed {
+  const text = JSON.stringify(body);
+  const at = String(signedAt);
+  const message = `${at}.${sha256Hex(apiKey.trim())}.${sha256Hex(customerId)}.${text}`;
+  return {
+    body: text,
+    signedAt: at,
+    signature: sign("sha256", Buffer.from(message), key).toString("base64"),
+  };
+}
+
+function signedResponse(signed: Signed): Response {
+  return new Response(signed.body, {
+    headers: {
+      "Revnix-Signed-At": signed.signedAt,
+      "Revnix-Signature": signed.signature,
+    },
+  });
+}
+
+const signedJson = (body: unknown) => signedResponse(signEntitlements(body));
+
+async function seedCache(
+  storage: ReturnType<typeof memoryStorage>,
+  signed: Signed,
+  fetchedAt = Number(signed.signedAt)
+) {
+  await storage.setItem(
+    "revnix.entitlements",
+    JSON.stringify({ "cust-c7": { ...signed, fetchedAt } })
+  );
 }
 
 describe("C7 request timeout", () => {
@@ -88,7 +149,7 @@ describe("C7 entitlement cache", () => {
     const storage = memoryStorage();
     const fetchImpl = jest
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse(ENT_BODY)) // 1st: live
+      .mockResolvedValueOnce(signedJson(ENT_BODY))
       .mockRejectedValueOnce(new Error("offline")); // 2nd: down
     const client = new RevnixClient({
       ...CONFIG,
@@ -116,7 +177,7 @@ describe("C7 entitlement cache", () => {
     const storage = memoryStorage();
     const fetchImpl = jest
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse(ENT_BODY));
+      .mockResolvedValueOnce(signedJson(ENT_BODY));
     const client = new RevnixClient({
       ...CONFIG,
       storage,
@@ -151,7 +212,7 @@ describe("REV-157 local expiry on cached entitlements", () => {
     const storage = memoryStorage();
     const fetchImpl = jest
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse(entBody(expiresAt))) // 1st: live
+      .mockResolvedValueOnce(signedJson(entBody(expiresAt)))
       .mockRejectedValue(new Error("offline")); // then: down
     const client = new RevnixClient({
       ...CONFIG,
@@ -285,7 +346,7 @@ describe("REV-198 cache fallback discipline", () => {
     const storage = memoryStorage();
     const fetchImpl = jest
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse(ENT_BODY)) // warm the cache
+      .mockResolvedValueOnce(signedJson(ENT_BODY))
       .mockResolvedValue(jsonResponse({ error: "revoked" }, 401));
     const client = new RevnixClient({
       ...CONFIG,
@@ -329,7 +390,7 @@ describe("REV-198 cache fallback discipline", () => {
     const storage = memoryStorage();
     const fetchImpl = jest
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse(ENT_BODY))
+      .mockResolvedValueOnce(signedJson(ENT_BODY))
       .mockResolvedValue(jsonResponse({ error: "boom" }, 500));
     const client = new RevnixClient({
       ...CONFIG,
@@ -352,10 +413,7 @@ describe("REV-198 offline cache age bound", () => {
 
   async function serveWithFetchedAt(fetchedAt: number) {
     const storage = memoryStorage();
-    await storage.setItem(
-      "revnix.entitlements",
-      JSON.stringify({ customerId: "cust-c7", data: ENT_BODY, fetchedAt })
-    );
+    await seedCache(storage, signEntitlements(ENT_BODY, { signedAt: fetchedAt }));
     const offline = jest
       .fn<typeof fetch>()
       .mockRejectedValue(new Error("offline"));
@@ -392,7 +450,7 @@ describe("REV-199 entitlement read TTL + coalescing", () => {
   test("reads within the TTL cost one request; concurrent reads share one", async () => {
     const fetchImpl = jest
       .fn<typeof fetch>()
-      .mockImplementation(async () => jsonResponse(ENT_BODY));
+      .mockImplementation(async () => signedJson(ENT_BODY));
     const client = new RevnixClient({
       ...CONFIG,
       storage: memoryStorage(),
@@ -415,7 +473,7 @@ describe("REV-199 entitlement read TTL + coalescing", () => {
   test("entitlementsTtlMs: 0 restores always-fetch", async () => {
     const fetchImpl = jest
       .fn<typeof fetch>()
-      .mockImplementation(async () => jsonResponse(ENT_BODY));
+      .mockImplementation(async () => signedJson(ENT_BODY));
     const client = new RevnixClient({
       ...CONFIG,
       storage: memoryStorage(),
@@ -456,7 +514,7 @@ describe("REV-200 diagnostics", () => {
         const headers = (init?.headers ?? {}) as Record<string, string>;
         if (String(url).includes("/entitlements")) {
           sawHeader = headers["X-Revnix-Bg-Failures"] ?? null;
-          return jsonResponse(ENT_BODY);
+          return signedJson(ENT_BODY);
         }
         throw new Error("offline"); // the retry pass fails
       }
@@ -516,7 +574,7 @@ describe("runtime lag limits", () => {
   test("entitlements with a cached snapshot use a 3 s timeout", async () => {
     const fetchImpl = jest
       .fn<typeof fetch>()
-      .mockImplementation(async () => jsonResponse(ENT_BODY));
+      .mockImplementation(async () => signedJson(ENT_BODY));
     const client = new RevnixClient({
       ...CONFIG,
       storage: memoryStorage(),
@@ -600,5 +658,188 @@ describe("runtime lag limits", () => {
     await client.retryPendingPurchases();
     expect(JSON.parse((await storage.getItem("revnix.pendingPurchases")) as string)).toEqual([]);
     spy.mockRestore();
+  });
+});
+
+describe("signed entitlements", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const INACTIVE = {
+    customerId: "cust-c7",
+    cursor: 4,
+    entitlements: [{ entitlementId: "pro", isActive: false, sources: [] }],
+  };
+
+  const clientWith = (
+    storage: ReturnType<typeof memoryStorage>,
+    fetchImpl: typeof fetch
+  ) =>
+    new RevnixClient({
+      ...CONFIG,
+      storage,
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: fetchImpl,
+      entitlementsTtlMs: 0,
+    });
+
+  const offline = () =>
+    jest.fn<typeof fetch>().mockRejectedValue(new Error("offline"));
+
+  const flipLastByte = (b64: string) => {
+    const bytes = Buffer.from(b64, "base64");
+    bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 1;
+    return bytes.toString("base64");
+  };
+
+  const REJECTED: Array<[string, () => Signed]> = [
+    [
+      "tampered body",
+      () => ({
+        ...signEntitlements(INACTIVE),
+        body: JSON.stringify(ENT_BODY),
+      }),
+    ],
+    [
+      "tampered signature",
+      () => {
+        const signed = signEntitlements(ENT_BODY);
+        return { ...signed, signature: flipLastByte(signed.signature) };
+      },
+    ],
+    ["unpinned key", () => signEntitlements(ENT_BODY, { key: UNPINNED.privateKey })],
+    ["other customer id", () => signEntitlements(ENT_BODY, { customerId: "cust-other" })],
+    ["other API key", () => signEntitlements(ENT_BODY, { apiKey: "rvx_pk_test_other" })],
+  ];
+
+  test("a signed live response is served and cached in the signed shape", async () => {
+    const storage = memoryStorage();
+    const signed = signEntitlements(ENT_BODY);
+    const client = clientWith(
+      storage,
+      jest.fn<typeof fetch>().mockResolvedValueOnce(signedResponse(signed))
+    );
+    const fresh = await client.getEntitlements();
+    expect(fresh.stale).toBe(false);
+    expect(fresh.entitlements[0]?.isActive).toBe(true);
+    const stored = JSON.parse((await storage.getItem("revnix.entitlements")) as string);
+    expect(stored["cust-c7"]).toEqual({
+      ...signed,
+      fetchedAt: expect.any(Number),
+    });
+  });
+
+  test("the verified cache survives into a new client and serves offline", async () => {
+    const storage = memoryStorage();
+    await clientWith(
+      storage,
+      jest.fn<typeof fetch>().mockResolvedValueOnce(signedJson(ENT_BODY))
+    ).getEntitlements();
+    const next = clientWith(storage, offline());
+    expect((await next.getCachedEntitlements())?.entitlements[0]?.isActive).toBe(true);
+    const served = await next.getEntitlements();
+    expect(served.stale).toBe(true);
+    expect(served.entitlements[0]?.isActive).toBe(true);
+  });
+
+  test("an unsigned live response with no cache throws a retryable error", async () => {
+    const storage = memoryStorage();
+    const client = clientWith(
+      storage,
+      jest.fn<typeof fetch>().mockResolvedValue(jsonResponse(ENT_BODY))
+    );
+    const err = await client.getEntitlements().catch((e) => e);
+    expect(err).toBeInstanceOf(RevnixError);
+    expect(err.isRetryable).toBe(true);
+    expect(await storage.getItem("revnix.entitlements")).toBeNull();
+  });
+
+  test.each<[string, () => Response]>([
+    ["unsigned", () => jsonResponse(ENT_BODY)],
+    ["tampered", () => signedResponse({ ...signEntitlements(INACTIVE), body: JSON.stringify(ENT_BODY) })],
+  ])("an %s live response falls back to the verified cache and leaves it intact", async (_, live) => {
+    const storage = memoryStorage();
+    await seedCache(storage, signEntitlements(INACTIVE));
+    const before = await storage.getItem("revnix.entitlements");
+    const client = clientWith(storage, jest.fn<typeof fetch>().mockResolvedValue(live()));
+    const served = await client.getEntitlements();
+    expect(served.stale).toBe(true);
+    expect(served.cursor).toBe(4);
+    expect(served.entitlements[0]?.isActive).toBe(false);
+    expect(await storage.getItem("revnix.entitlements")).toBe(before);
+  });
+
+  test.each(REJECTED)("live: %s is rejected", async (_, make) => {
+    const storage = memoryStorage();
+    const client = clientWith(
+      storage,
+      jest.fn<typeof fetch>().mockResolvedValue(signedResponse(make()))
+    );
+    await expect(client.getEntitlements()).rejects.toMatchObject({ status: 0 });
+    expect(await storage.getItem("revnix.entitlements")).toBeNull();
+  });
+
+  test.each(REJECTED)("cache: %s is ignored", async (_, make) => {
+    const storage = memoryStorage();
+    await seedCache(storage, make());
+    const client = clientWith(storage, offline());
+    expect(await client.getCachedEntitlements()).toBeNull();
+    await expect(client.getEntitlements()).rejects.toBeInstanceOf(RevnixNetworkError);
+  });
+
+  test.each([
+    ["per-customer", { "cust-c7": { data: ENT_BODY, fetchedAt: Date.now() } }],
+    ["single-slot", { customerId: "cust-c7", data: ENT_BODY, fetchedAt: Date.now() }],
+  ])("a legacy %s {data, fetchedAt} entry is ignored", async (_, legacy) => {
+    const storage = memoryStorage();
+    await storage.setItem("revnix.entitlements", JSON.stringify(legacy));
+    const client = clientWith(storage, offline());
+    expect(await client.getCachedEntitlements()).toBeNull();
+    await expect(client.getEntitlements()).rejects.toBeInstanceOf(RevnixNetworkError);
+  });
+
+  test("an edited fetchedAt cannot extend the offline window past signedAt", async () => {
+    const storage = memoryStorage();
+    const signedAt = Date.now() - 15 * DAY_MS;
+    await seedCache(storage, signEntitlements(ENT_BODY, { signedAt }), Date.now() + DAY_MS);
+    const served = await clientWith(storage, offline()).getEntitlements();
+    expect(served.fetchedAt).toBe(signedAt);
+    expect(served.entitlements[0]?.isActive).toBe(false);
+  });
+
+  test("waitForEntitlements resolves on a signed read that covers the seq", async () => {
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(signedJson({ ...ENT_BODY, cursor: 3 }))
+      .mockResolvedValueOnce(signedJson({ ...ENT_BODY, cursor: 7 }));
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage: memoryStorage(),
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: fetchImpl,
+      readYourWritesDelaysMs: [1, 1, 1],
+    });
+    const result = await client.waitForEntitlements(7);
+    expect(result.cursor).toBe(7);
+    expect(result.stale).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test("waitForEntitlements does not resolve on an unsigned read", async () => {
+    const fetchImpl = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(signedJson({ ...ENT_BODY, cursor: 3 }))
+      .mockImplementation(async () => jsonResponse({ ...ENT_BODY, cursor: 7 }));
+    const client = new RevnixClient({
+      ...CONFIG,
+      storage: memoryStorage(),
+      customerId: "cust-c7",
+      reportInstalls: false,
+      fetch: fetchImpl,
+      readYourWritesDelaysMs: [1, 1],
+    });
+    const result = await client.waitForEntitlements(7);
+    expect(result.cursor).toBe(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 });

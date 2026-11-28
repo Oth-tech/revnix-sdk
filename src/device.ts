@@ -91,7 +91,7 @@ export function encodeDeviceHeader(payload: Record<string, unknown>): string {
   return base64url(utf8Bytes(JSON.stringify(payload)));
 }
 
-function utf8Bytes(text: string): number[] {
+export function utf8Bytes(text: string): number[] {
   const bytes: number[] = [];
   for (let i = 0; i < text.length; i++) {
     let code = text.charCodeAt(i);

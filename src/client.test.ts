@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { RevnixClient } from "./client.js";
 import { PurchaseBlockedError, RevnixError } from "./errors.js";
 import { purchaseInputFromIap } from "./iap.js";
@@ -7,21 +8,43 @@ import type { RevnixStorage } from "./types.js";
 
 // readYourWritesDelaysMs: [] keeps the pre-M9 suites byte-identical (no
 // post-purchase entitlement poll); the M9 describe below opts back in.
+const SIGNER = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+
 const CONFIG = {
   apiKey: "rvx_test_abc",
   baseUrl: "https://demo.convex.site/",
   readYourWritesDelaysMs: [] as number[],
+  entitlementSigningKeys: [
+    SIGNER.publicKey.export({ type: "spki", format: "der" }).toString("base64"),
+  ],
 };
+
+const sha256Hex = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+
+function signedResponse(body: unknown, customerId: string): Response {
+  const text = JSON.stringify(body);
+  const signedAt = String(Date.now());
+  const message = `${signedAt}.${sha256Hex(CONFIG.apiKey)}.${sha256Hex(customerId)}.${text}`;
+  return new Response(text, {
+    headers: {
+      "Revnix-Signed-At": signedAt,
+      "Revnix-Signature": sign("sha256", Buffer.from(message), SIGNER.privateKey).toString("base64"),
+    },
+  });
+}
 
 type FetchMock = jest.Mock<typeof fetch>;
 
 function mockFetch(
-  ...responses: Array<{ status?: number; body: unknown }>
+  ...responses: Array<{ status?: number; body: unknown; signedFor?: string }>
 ): FetchMock {
   const fn = jest.fn<typeof fetch>();
   for (const r of responses) {
     fn.mockResolvedValueOnce(
-      new Response(JSON.stringify(r.body), { status: r.status ?? 200 })
+      r.signedFor !== undefined
+        ? signedResponse(r.body, r.signedFor)
+        : new Response(JSON.stringify(r.body), { status: r.status ?? 200 })
     );
   }
   return fn;
@@ -284,7 +307,10 @@ describe("reads", () => {
         { entitlementId: "extra", isActive: false, sources: [] },
       ],
     };
-    const fetchImpl = mockFetch({ body }, { body });
+    const fetchImpl = mockFetch(
+      { body, signedFor: "user 9" },
+      { body, signedFor: "user 9" }
+    );
     const client = new RevnixClient({
       ...CONFIG,
       fetch: fetchImpl,
@@ -1132,6 +1158,7 @@ describe("M9: read-your-writes after registerPurchase", () => {
       cursor,
       entitlements: [{ entitlementId: "pro", isActive }],
     },
+    signedFor: "rvx_anon_x",
   });
 
   test("polls until the cursor covers the purchase, then caches the fresh read", async () => {
@@ -1176,6 +1203,29 @@ describe("M9: read-your-writes after registerPurchase", () => {
     const result = await client.registerPurchase(PURCHASE);
     expect(result.seq).toBe(9); // never throws, never spins forever
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  test("an unsigned read never satisfies the poll or reaches the cache", async () => {
+    const { signedFor: _, ...unsigned } = ENT(5, true);
+    const fetchImpl = mockFetch(
+      { status: 201, body: { eventId: "e1", seq: 5, duplicate: false, customerId: "rvx_anon_x" } },
+      ENT(3, false),
+      unsigned,
+      unsigned
+    );
+    const client = new RevnixClient({
+      ...CONFIG,
+      customerId: "rvx_anon_x",
+      storage: memoryStorage(),
+      fetch: fetchImpl,
+      reportInstalls: false,
+      readYourWritesDelaysMs: [1, 1],
+    });
+    await client.registerPurchase(PURCHASE);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    const cached = await client.getCachedEntitlements();
+    expect(cached?.cursor).toBe(3);
+    expect(cached?.entitlements[0]?.isActive).toBe(false);
   });
 
   test("an entitlements failure never fails the registered purchase", async () => {
@@ -1231,9 +1281,7 @@ describe("REV-204 hygiene", () => {
     });
     const fetchA = jest
       .fn<typeof fetch>()
-      .mockImplementation(async () =>
-        new Response(JSON.stringify(body("cust-a")), { status: 200 })
-      );
+      .mockImplementation(async () => signedResponse(body("cust-a"), "cust-a"));
     const a = new RevnixClient({
       ...CONFIG,
       storage,
@@ -1245,9 +1293,7 @@ describe("REV-204 hygiene", () => {
 
     const fetchB = jest
       .fn<typeof fetch>()
-      .mockImplementationOnce(async () =>
-        new Response(JSON.stringify(body("cust-b")), { status: 200 })
-      )
+      .mockImplementationOnce(async () => signedResponse(body("cust-b"), "cust-b"))
       .mockRejectedValue(new Error("offline"));
     const b = new RevnixClient({
       ...CONFIG,

@@ -9,7 +9,7 @@ Revnix client SDK for React Native, Expo (dev build), React and Next.js. Talks t
   - `react-native-revnix/ui` → `src/ui/index.ts`: `RevnixPaywall`, `RevnixBlockPaywall`, block helpers (imports react-native).
   - `react-native-revnix/store` → `src/store/index.ts`: side-effect import that wraps `NativeModules.RevnixStore` and calls `setStoreAdapter`; also `nativeDeviceIntegrity`, `nativeAdvertisingId`.
 - Root shims `ui.js` / `ui.d.ts`, `store.js` / `store.d.ts` serve resolvers without `exports` support (Metro, TS `node`). Keep them in sync with new subpaths.
-- Peers `react >=18`, `react-native >=0.72`, both optional. Zero runtime deps; keep it that way (`iap.ts` is structurally typed so there is no react-native-iap dependency).
+- Peers `react >=18`, `react-native >=0.72`, both optional. Runtime deps are only `@noble/curves` 1.9.7 + `@noble/hashes` 1.8.0 (exact pins, 1.x because 2.x is ESM-only and this package ships CJS), for entitlement signature checks (Hermes has no `crypto.subtle`); add no others (`iap.ts` is structurally typed so there is no react-native-iap dependency).
 - Consumed by `../RevnixSDK-Capacitor` (web layer) and by VoiGu via a local `file:` tarball.
 
 ## Stack
@@ -31,6 +31,7 @@ Revnix client SDK for React Native, Expo (dev build), React and Next.js. Talks t
 - Every request: `Authorization: Bearer <apiKey>`, `X-Revnix-SDK: react-native-revnix/<SDK_VERSION>`, optional `X-Revnix-Bg-Failures`, `X-Revnix-Device`; 10 s timeout. Errors: `RevnixAuthError` (401/403), `RevnixRateLimitError` (429 + Retry-After), `PurchaseBlockedError` (409 on purchases), `RevnixTimeoutError`, `RevnixNetworkError`.
 - Endpoints (all exist in `revnix-app/convex/http.ts`): `/v1/identify`, `/v1/customers/{id}/{alias,entitlements,identity,attributes,attribution}`, `/v1/purchases`, `/v1/placements/{key}/offering`, `/v1/placements/triggered`, `/v1/paywalls/{viewed,closed,events}`, `/v1/paywalls/preview/{token}`, `/v1/events`, `/v1/ad-revenue`, `/v1/attribution`, `/v1/push-token`, `/v1/installs`, `/v1/links/resolve`, `/v1/config`.
 - Persistence keys `revnix.*` in the storage adapter. Without an adapter: web uses localStorage; RN falls back to memory, warns, and disables install reporting.
+- Entitlements are signed (`Revnix-Signed-At` + `Revnix-Signature`, ECDSA P-256 over `${signedAt}.${sha256hex(apiKey.trim())}.${sha256hex(customerId)}.${body}`, server side `../revnix-app/convex/lib/entitlementSignature.ts`). `fetchFreshEntitlements` verifies against `ENTITLEMENT_SIGNING_KEYS` (prod, dev SPKI) and throws a retryable `RevnixError(0)` on a bad or missing signature, so the verified cache serves. The cache `revnix.entitlements` stores `{body, signedAt, signature, fetchedAt}` per customer and every read re-verifies it (effective fetchedAt = min(fetchedAt, signedAt)); old `{data, fetchedAt}` entries count as no cache. Tests pass their own key through the undocumented `entitlementSigningKeys` config field and sign with Node crypto.
 - Queues: pending purchases (cap 100, 30 days, retried at launch); events from `track` / paywall events batched (flush at 20 queued, 10 s, background, next launch; batch 100, cap 1000, 30 s hold after failure). Entitlements and placements cached for offline. Background failures surface via `onDiagnostic`.
 
 ## Commands (`package.json` scripts)

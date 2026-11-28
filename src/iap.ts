@@ -43,7 +43,7 @@ function jwsFromIap(purchase: IapPurchase): string | undefined {
 const B64_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-function base64UrlDecode(segment: string): string {
+export function base64UrlDecode(segment: string): string {
   const b64 = segment.replace(/-/g, "+").replace(/_/g, "/");
   let out = "";
   let buffer = 0;

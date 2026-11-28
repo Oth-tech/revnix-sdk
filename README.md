@@ -18,7 +18,7 @@
 
 ![Revnix: subscriptions, paywalls and attribution for mobile apps](https://www.revnix.io/sdk/hero.png)
 
-Revnix SDK makes in-app subscriptions, paywalls and attribution for React Native fast and easy. One package buys through StoreKit 2 and Google Play Billing, validates the receipt on the server and unlocks the entitlement. Zero npm dependencies.
+Revnix SDK makes in-app subscriptions, paywalls and attribution for React Native fast and easy. One package buys through StoreKit 2 and Google Play Billing, validates the receipt on the server and unlocks the entitlement. Two small runtime dependencies, `@noble/curves` and `@noble/hashes`, which verify entitlement signatures.
 
 ## Table of Contents
 
@@ -39,7 +39,7 @@ Revnix SDK makes in-app subscriptions, paywalls and attribution for React Native
 ## Why Revnix?
 
 - [Purchases in one call](https://www.revnix.io/docs/react-native/make-purchases). `purchase()` opens the App Store or Google Play sheet, validates the receipt on the server and grants the entitlement. No react-native-iap, no server code.
-- [Entitlements that work offline](https://www.revnix.io/docs/react-native/check-entitlements). Entitlement checks are cached on device, so a user who paid stays unlocked without a network.
+- [Entitlements that work offline](https://www.revnix.io/docs/react-native/check-entitlements). Entitlement checks are cached on device, so a user who paid stays unlocked without a network. Every entitlement response and cache entry is signature-checked, so a proxy or an edited cache cannot unlock premium.
 - [Remote paywalls](https://www.revnix.io/docs/paywall-builder). Design paywalls in the dashboard, pick from 250 templates and ship copy, prices and layout changes without an app release.
 - [A/B tests and holdouts](https://www.revnix.io/docs/ab-tests). Split a placement between variants, measure revenue per user with credible intervals and ship the winner from the dashboard.
 - [Attribution and deep links](https://www.revnix.io/docs/attribution). Install attribution, deferred deep links, Apple Search Ads, Google Ads and MMP forwarding, all from the same SDK.
@@ -106,7 +106,7 @@ Your API key and deployment URL are in the dashboard under Settings. See [API ke
 - `purchase(productId)` runs the whole flow: store sheet, server-side receipt validation, entitlement, transaction finish. `restore()` brings purchases back on a new device.
 - Consumables on Google Play: list their ids in `consumableProductIds` so they are consumed after Revnix records the purchase and can be bought again.
 - Renewals, purchases on other devices and Ask to Buy approvals arrive on their own and are registered automatically.
-- Entitlements and placements are cached on device, so paid users stay unlocked offline.
+- Entitlements and placements are cached on device, so paid users stay unlocked offline. Entitlements are signed by the server and verified on device, both live and from the cache; an unsigned or altered response is rejected and the last verified cache is served instead.
 - Failed registrations are retried automatically when the app comes back online.
 - Identify users across devices with `identify()`; purchases follow the customer, not the install. See [Identify users](https://www.revnix.io/docs/react-native/identify-users).
 - Typed errors for blocked purchases and account transfers. See [Errors and transfers](https://www.revnix.io/docs/react-native/errors-and-transfers).
