@@ -19,7 +19,12 @@ import {
   compactPayload,
   detectDeviceFacts,
   encodeDeviceHeader,
+  utf8Bytes,
 } from "./device.js";
+import { base64UrlDecode } from "./iap.js";
+import { p256 } from "@noble/curves/nist.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { SDK_VERSION } from "./version.js";
 import {
   getStoreAdapter,
@@ -88,6 +93,12 @@ const PURCHASE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // REV-204 (L10): how many customers keep a cached entitlements snapshot.
 const ENTITLEMENTS_CACHE_MAX = 4;
 
+const ENTITLEMENT_SIGNING_KEYS = [
+  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsVQ+iVnl3H7IWe6uma8VASdqlJ09SrtOIKpxB5vF1xF7f3nD+SBzXlse1+skTi/jv/CLa4fUz9qGfZ4T8M+Nhw==",
+  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzGACMgBMy29LVcpzlmUFBRi4aiCB0FSitlLcO0k8fJ9q3foy22k2twy2U/qL0yVJHKQWWIEmt96dchyGlgDZHQ==",
+];
+const P256_SPKI_PREFIX_BYTES = 26;
+
 // REV-204 (L10): http:// is tolerated only for development hosts.
 const PRIVATE_HTTP_HOST =
   /^http:\/\/(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[::1\])/i;
@@ -123,6 +134,18 @@ interface PendingPurchase {
   input: RegisterPurchaseInput;
   queuedAt?: number;
 }
+
+interface SignedEntitlements {
+  body: string;
+  signedAt: string;
+  signature: string;
+  fetchedAt: number;
+}
+
+const bytesOf = (text: string) => Uint8Array.from(utf8Bytes(text));
+const sha256Hex = (text: string) => bytesToHex(sha256(bytesOf(text)));
+const base64Bytes = (b64: string) =>
+  Uint8Array.from(base64UrlDecode(b64), (c) => c.charCodeAt(0));
 
 interface PlacementCacheEntry {
   data: PlacementResolution;
@@ -285,6 +308,8 @@ export class RevnixClient {
   private readonly readYourWritesDelaysMs: number[];
   private readonly offlineMaxCacheAgeMs: number;
   private readonly entitlementsTtlMs: number;
+  private readonly apiKeyHash: string;
+  private readonly signingKeys: Uint8Array[];
   // REV-200 (CTO-R2 M26): background failures used to vanish into
   // catch(() => {}) — a fleet failing before the server produced silence.
   // Every such site now reports here: the app's onDiagnostic callback gets
@@ -379,6 +404,11 @@ export class RevnixClient {
       config.offlineMaxCacheAgeMs ?? DEFAULT_OFFLINE_MAX_CACHE_AGE_MS;
     this.entitlementsTtlMs =
       config.entitlementsTtlMs ?? DEFAULT_ENTITLEMENTS_TTL_MS;
+    this.apiKeyHash = sha256Hex(config.apiKey.trim());
+    this.signingKeys = (
+      (config as { entitlementSigningKeys?: string[] }).entitlementSigningKeys ??
+      ENTITLEMENT_SIGNING_KEYS
+    ).map((spki) => base64Bytes(spki).slice(P256_SPKI_PREFIX_BYTES));
     this.onDiagnostic = config.onDiagnostic;
     this.onDeferredDeepLink = config.onDeferredDeepLink;
     this.onAttribution = config.onAttribution;
@@ -758,15 +788,28 @@ export class RevnixClient {
     customerId: string,
     timeoutMs?: number
   ): Promise<CustomerEntitlements> {
-    const fresh = await this.request<CustomerEntitlements>(
+    const { text, headers } = await this.send(
       "GET",
       `/v1/customers/${encodeURIComponent(customerId)}/entitlements`,
       undefined,
       undefined,
       timeoutMs
     );
-    await this.writeEntitlementsCache(customerId, fresh);
-    const result = { ...fresh, stale: false, fetchedAt: Date.now() };
+    const entry: SignedEntitlements = {
+      body: text,
+      signedAt: headers.get("Revnix-Signed-At") ?? "",
+      signature: headers.get("Revnix-Signature") ?? "",
+      fetchedAt: Date.now(),
+    };
+    const verified = this.verifyEntitlements(customerId, entry);
+    if (!verified) {
+      throw new RevnixError(
+        0,
+        "Revnix: entitlements response has a missing or invalid signature"
+      );
+    }
+    await this.writeEntitlementsCache(customerId, entry);
+    const result = { ...verified.data, stale: false, fetchedAt: Date.now() };
     this.freshEntitlements = { customerId, data: result, at: Date.now() };
     return result;
   }
@@ -2149,39 +2192,17 @@ export class RevnixClient {
 
   // ——— C7: entitlement cache (best-effort; storage failures never throw) ———
 
-  // REV-204 (L10): the cache used to be single-slot — writing customer B
-  // dropped customer A, so the first offline launch after identify()/logout()
-  // had no gate at all. It is a small per-customer map now (legacy single-slot
-  // payloads migrate on read); ENTITLEMENTS_CACHE_MAX bounds it because
-  // logout() mints a fresh anonymous id every time.
   private async readEntitlementsMap(): Promise<
-    Record<string, { data: CustomerEntitlements; fetchedAt: number }>
+    Record<string, Partial<SignedEntitlements> | undefined>
   > {
     try {
       const raw = await this.storage.getItem(ENTITLEMENTS_CACHE_KEY);
       if (!raw) return {};
       const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || "customerId" in parsed) {
         return {};
       }
-      // Pre-REV-204 single-slot shape: { customerId, data, fetchedAt }.
-      if ("customerId" in parsed && "data" in parsed) {
-        const legacy = parsed as {
-          customerId: string;
-          data: CustomerEntitlements;
-          fetchedAt: number;
-        };
-        return {
-          [legacy.customerId]: {
-            data: legacy.data,
-            fetchedAt: legacy.fetchedAt,
-          },
-        };
-      }
-      return parsed as Record<
-        string,
-        { data: CustomerEntitlements; fetchedAt: number }
-      >;
+      return parsed;
     } catch (err) {
       this.diag("storageRead", err);
       return {};
@@ -2190,11 +2211,11 @@ export class RevnixClient {
 
   private async writeEntitlementsCache(
     customerId: string,
-    data: CustomerEntitlements
+    entry: SignedEntitlements
   ): Promise<void> {
     try {
       const map = await this.readEntitlementsMap();
-      map[customerId] = { data, fetchedAt: Date.now() };
+      map[customerId] = entry;
       const ids = Object.keys(map);
       if (ids.length > ENTITLEMENTS_CACHE_MAX) {
         ids
@@ -2215,7 +2236,39 @@ export class RevnixClient {
     customerId: string
   ): Promise<{ data: CustomerEntitlements; fetchedAt: number } | null> {
     const map = await this.readEntitlementsMap();
-    return map[customerId] ?? null;
+    return this.verifyEntitlements(customerId, map[customerId]);
+  }
+
+  private verifyEntitlements(
+    customerId: string,
+    entry: Partial<SignedEntitlements> | undefined
+  ): { data: CustomerEntitlements; fetchedAt: number } | null {
+    const { body, signedAt, signature, fetchedAt } = entry ?? {};
+    if (
+      typeof body !== "string" ||
+      typeof signedAt !== "string" ||
+      !/^\d+$/.test(signedAt) ||
+      typeof signature !== "string" ||
+      typeof fetchedAt !== "number"
+    ) {
+      return null;
+    }
+    try {
+      const digest = sha256(
+        bytesOf(`${signedAt}.${this.apiKeyHash}.${sha256Hex(customerId)}.${body}`)
+      );
+      const der = base64Bytes(signature);
+      const valid = this.signingKeys.some((key) =>
+        p256.verify(der, digest, key, { format: "der", lowS: false })
+      );
+      if (!valid) return null;
+      return {
+        data: JSON.parse(body) as CustomerEntitlements,
+        fetchedAt: Math.min(fetchedAt, Number(signedAt)),
+      };
+    } catch {
+      return null;
+    }
   }
 
   // ——— REV-157: placement cache (best-effort; storage failures never throw) ———
@@ -2372,8 +2425,19 @@ export class RevnixClient {
     path: string,
     body?: unknown,
     extraHeaders?: Record<string, string>,
-    timeoutMs = this.requestTimeoutMs
+    timeoutMs?: number
   ): Promise<T> {
+    return (await this.send(method, path, body, extraHeaders, timeoutMs))
+      .parsed as T;
+  }
+
+  private async send(
+    method: "GET" | "POST",
+    path: string,
+    body?: unknown,
+    extraHeaders?: Record<string, string>,
+    timeoutMs = this.requestTimeoutMs
+  ): Promise<{ parsed: unknown; text: string; headers: Headers }> {
     // C7: abort the request after requestTimeoutMs so a slow or dead backend
     // can't hang the app. AbortController is guarded for very old runtimes.
     const controller =
@@ -2424,9 +2488,11 @@ export class RevnixClient {
     // The counter reached the server (any HTTP status is a delivery).
     this.bgFailures = Math.max(0, this.bgFailures - reportedBgFailures);
 
+    let text = "";
     let parsed: unknown;
     try {
-      parsed = await res.json();
+      text = await res.text();
+      parsed = JSON.parse(text);
     } catch {
       parsed = undefined;
     }
@@ -2461,6 +2527,6 @@ export class RevnixClient {
       }
       throw new RevnixError(res.status, message);
     }
-    return parsed as T;
+    return { parsed, text, headers: res.headers };
   }
 }

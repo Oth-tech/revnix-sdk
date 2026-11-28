@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+Ship this release after the Revnix server signs entitlement responses (`ENTITLEMENT_SIGNING_KEY` set on the deployment). Against an unsigned server every entitlement read fails.
+
+### Changed
+
+- Entitlements are now signature-checked, like the native SDKs. The live `GET /v1/customers/{id}/entitlements` response must carry a valid `Revnix-Signature` from a pinned Revnix key; otherwise it is rejected as a retryable error and the last verified cached snapshot serves (within the offline window). With no cache the call throws and `isEntitled` is false.
+- The offline cache now stores the signed body and is re-verified on every read. Entries written by older versions are ignored, so the first offline launch after upgrading has no cache.
+- New runtime dependencies `@noble/curves` 1.9.7 and `@noble/hashes` 1.8.0 for the P-256 check (Hermes has no WebCrypto).
+- Browser apps that proxy `/v1` must forward the `Revnix-Signed-At` and `Revnix-Signature` response headers.
+
 ## 2.0.0 (2026-11-25)
 
 No SDK changes. Forced release 55ceaf4; the package contents are identical to 1.11.0.
